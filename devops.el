@@ -1,12 +1,33 @@
 ;; devops.el
 
+(defun devops-org-keywords (key)
+  "Return all values for keyword KEY as a list."
+  (cdr (assoc key (org-collect-keywords (list key)))))
 
-(require 'magit)
+(defun devops--parse-server-keyword (value)
+  "Parse a #+SERVER value like \"server1 (source)\" into (TAG . SERVER)."
+  (when (string-match "\\`\\([^ ]+\\) +(\\([^)]+\\))\\'" value)
+    (cons (match-string 2 value) (match-string 1 value))))
 
-(defun devops-org-keyword (key)
-  (cadr (assoc key (org-collect-keywords (list key)))))
+(defun devops-server-tag-alist ()
+  "Return alist of (TAG . SERVER) from #+SERVER keywords in current buffer."
+  (delq nil (mapcar #'devops--parse-server-keyword
+                    (devops-org-keywords "SERVER"))))
 
-(defun devops-tangle-resolve-target ()
+(defun devops-resolve-server-for-tag (tag)
+  "Look up TAG in #+SERVER keywords, return server name or nil."
+  (cdr (assoc tag (devops-server-tag-alist))))
+
+(defun devops-set-header-args-from-tag ()
+  "Set :header-args: :dir from the current heading's tag and #+SERVER mappings."
+  (interactive)
+  (let* ((tags (org-get-tags nil t))
+         (server (seq-some #'devops-resolve-server-for-tag tags)))
+    (if server
+        (org-entry-put nil "header-args" (format ":dir app@%s:" server))
+      (user-error "No #+SERVER match for tags: %s" tags))))
+
+(defun devops--tangle-resolve-target ()
   "Return (FILEPATH . BODY) for the source block at point."
   (let* ((element (org-element-at-point))
          (body (org-element-property :value element))
@@ -25,34 +46,10 @@
 (defun devops-tangle-to-target ()
   "Tangle source block at point to :dir + target path."
   (interactive)
-  (pcase-let ((`(,filepath . ,body) (my/tangle-resolve-target)))
+  (pcase-let ((`(,filepath . ,body) (devops--tangle-resolve-target)))
     (write-region body nil filepath)
     (message "Wrote %s" filepath)))
 
-(defun devops--resolve-secrets-table (rows)
-  "Resolve auth-source passwords for ROWS against AUTH-HOST.
-Each row is (KEY AUTH-USER). Returns ((KEY PASSWORD) ...).
-Binds `default-directory' locally so auth-source (1password)
-always runs `op' on the local server, not over TRAMP."
-  (let ((default-directory "~"))
-    (mapcar (lambda (row)
-              (list (car row)
-                    (auth-source-pick-first-password
-                     :host (nth 1 row) :user (nth 2 row))))
-            rows)))
-
-(defun devops-create-podman-secrets (secrets)
-  "Create Podman secrets.
-SECRETS is a list of (secret-name auth-user) rows."
-  (dolist (pair (devops--resolve-secrets-table secrets))
-    (let* ((secret-name (car pair))
-           (password (nth 1 pair))
-           (cmd (format "printf '%%s' %s | podman secret create --replace %s -"
-                        (shell-quote-argument password)
-                        (shell-quote-argument secret-name))))
-      (message "Creating secret %s ..." secret-name)
-      (shell-command cmd)
-      (message "Creating secret %s ... done" secret-name))))
 
 (defun devops-exec-in-notebook (block-name)
   "Execute BLOCK-NAME in the source deployment org file."
@@ -74,16 +71,11 @@ Filter by REGEXP if provided."
             (let* ((name (car entry))
                    (info (cdr entry))
                    (lang (nth 0 info))
-                   (body (string-trim (nth 1 info)))
                    (params (nth 2 info))
                    (filtered (seq-filter (lambda (p)
-                                           (memq (car p) '(:dir :session :var)))
-                                         params))
-                   (filtered (seq-remove (lambda (p)
-                                           (and (eq (car p) :session)
-                                                (equal (cdr p) "none")))
-                                         filtered)))
-              (list name lang body filtered)))
+                                           (memq (car p) '(:var)))
+                                         params)))
+              (list name lang filtered)))
           (seq-filter (lambda (entry)
                         (or (null regexp)
                             (string-match-p regexp (symbol-name (car entry)))))
@@ -190,19 +182,6 @@ In a src block: copies body to clipboard and exports :var env vars."
   "Creates a new timestamp by formatting the current time."
   (format-time-string "%Y%m%dT%H%M%S"))
 
-(cl-defun devops--create-notebook-dir (slug &key (type "migration") (stamp (devops--new-timestamp)))
-  "Create a notebook directory in the subdirectory indice"
-  (let* ((dir-name (format "%s--%s" stamp slug))
-	 (root (project-root (project-current)))
-	 (dir (expand-file-name (pluralize-string type) root))
-	 (notebook-dir (expand-file-name dir-name dir)))
-    (make-directory notebook-dir t)))
-
-(defun devops-create-migration-dir (slug)
-  "Creates a new timestamped migrations directory"
-  (interactive "sSlug: ")
-  (devops--create-notebook-dir slug :type "migrations"))
-
 (defun devops-create-incident-dir (slug)
   "Creates a new timestamped incident directory"
   (interactive "sSlug: ")
@@ -216,62 +195,16 @@ In a src block: copies body to clipboard and exports :var env vars."
 	 (wt (expand-file-name (concat name "_" branch) path)))
     wt))
 
-;; (devops-worktree-directory "foo")
-;; creates worktree from main in a sibling directory called {repo}_foo
-
-;; (devops-create-worktree "../foo" "foo" (magit-get-current-branch))
-
-;; I can fire off the first command (e.g. create-migration or create-incident)
-;; This creates a worktree and a notebook with a consistenly named branch
-;; I / Claude can query which worktree dir we are in, and what type of thing we are doing (incident / activity)
-
-;; get timestamp
-;; create branch and worktree
-;; create incident dir
-
-(cl-defun devops--create-worktree
-    (&key
-     (dir default-directory)
-     (type "migration")
-     (stamp (devops--new-timestamp)))
-  "Creates a worktree and directory structure for an incident"
-  (let* ((branch (concat type "-" stamp))
-	 (target (devops--worktree-directory branch :dir dir)))
-    (magit-worktree-branch target branch "main")))
-
-;;;###autoload
-(defun devops-incident (slug)
-  "Create an incident worktree and notebook"
-  (interactive "sSlug:")
-  (let ((type "incident")
-	(stamp (devops--new-timestamp)))
-    (devops--create-worktree :type type :stamp stamp)
-    (devops--create-notebook-dir slug :type type :stamp stamp)))
-
-;;;###autoload
-(defun devops-migration (slug)
-  "Create an incident worktree and notebook"
-  (interactive "sSlug:")
-  (let ((type "migration")
-	(stamp (devops--new-timestamp)))
-    (devops--create-worktree :type type :stamp stamp)
-    (devops--create-notebook-dir slug :type type :stamp stamp)))
-
-(defun devops-current-migration-dir (&optional absolute)
-  "When in a migration branch like migration-20260313T111705,
-find a file in the /migrations directory whose name starts with
-that timestamp, and return the path."
-  (let* ((branch (magit-get-current-branch))
-         (timestamp (when (string-match "migration-\\([0-9T]+\\)" branch)
-                      (match-string 1 branch)))
-         (migrations-dir (expand-file-name "migrations" (magit-toplevel)))
-         (match (when timestamp
-                  (seq-find (lambda (d)
-                              (string-prefix-p timestamp d))
-                            (directory-files migrations-dir nil "^[^.]")))))
-    (when match
-      (if absolute
-          (expand-file-name match migrations-dir)
-        (concat "migrations/" match)))))
+(defun devops--resolve-secrets-table (rows)
+  "Resolve auth-source passwords for ROWS against AUTH-HOST.
+Each row is (KEY AUTH-USER). Returns ((KEY PASSWORD) ...).
+Binds `default-directory' locally so auth-source (1password)
+always runs `op' on the local server, not over TRAMP."
+  (let ((default-directory "~"))
+    (mapcar (lambda (row)
+              (list (car row)
+                    (auth-source-pick-first-password
+                     :host (nth 1 row) :user (nth 2 row))))
+            rows)))
 
 (provide 'devops)

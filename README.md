@@ -1,6 +1,8 @@
-# devops.el: Agentic Devops
+# devops.el: Org-based devops
 
 This package allows you to provision and manage infra
+
+- 
 
 ## Requirements
 
@@ -15,9 +17,3 @@ This package allows you to provision and manage infra
   :ensure t
   :vc (:url "https://github.com/unifica-ai/devops.el"))
 ``
-
-## Project structure
-
-- `tools.org`: a collection of commands as org LOB blocks
-- `migrations/`: migration notebooks
-- `incidents/`: incident notebooks
