@@ -36,6 +36,6 @@ that timestamp, and return the path."
     (when match
       (if absolute
           (expand-file-name match migrations-dir)
-        (concat "migrations/" match ".org")))))
+        (concat "migrations/" match)))))
 
 (provide 'devops-migration)
