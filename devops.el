@@ -58,11 +58,9 @@
     (org-babel-execute-src-block)))
 
 ;;;###autoload
-(defun devops-ingest-tool-blocks ()
-  "Ingest tools.org"
-  (interactive)
-  (org-babel-lob-ingest
-   (expand-file-name "tools.org" (project-root (project-current)))))
+(defalias 'devops-ingest-tool-blocks 'devops-lob-load-project-tools
+  "Load tools.org from current project root into the org-babel LOB.
+Deprecated alias for `devops-lob-load-project-tools'.")
 
 (defun devops-org-tool-blocks (&optional regexp)
   "Return a summary of org-babel library of babel entries.
