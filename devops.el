@@ -20,9 +20,9 @@
 ;; `devops.el' offers utilities for running commands on local and remote
 ;; machines using org mode.
 
-(require 'devops-migration.el)
-(require 'devops-podman.el)
-(require 'devops-lob.el)
+(require 'devops-migration)
+(require 'devops-podman)
+(require 'devops-lob)
 
 (defun devops-org-keywords (key)
   "Return all values for keyword KEY as a list."

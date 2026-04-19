@@ -1,5 +1,5 @@
-;; devops-migration.el -- Provides commands for starting and locating a migration 
-(require 'magit-worktree)
+;; devops-migration.el -- Provides commands for starting and locating a migration  -*- lexical-binding: t; -*- 
+(require 'magit)
 
 (cl-defun devops--create-worktree
     (&key
