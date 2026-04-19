@@ -1,4 +1,5 @@
-(require 'devops)
+;; devops-migration.el -- Provides commands for starting and locating a migration 
+(require 'magit-worktree)
 
 (cl-defun devops--create-worktree
     (&key
@@ -21,6 +22,7 @@
 	(notebook (expand-file-name (concat "migrations/" stamp "--" slug ".org") target)))
     (find-file notebook)))
 
+;;;###autoload
 (defun devops-current-migration (&optional absolute)
   "When in a migration branch like migration-20260313T111705,
 find a file in the /migrations directory whose name starts with
