@@ -1,0 +1,183 @@
+#+TITLE: Decision 1: Devops-tangle command
+#+DATE: 2026-05-08
+#+LINK: noweb https://orgmode.org/manual/Noweb-Reference-Syntax.html
+#+LINK: org-babel-langauges https://orgmode.org/worg/org-contrib/babel/languages/index.html
+
+* Context
+
+Emacs can "tangle" org-mode source blocks to files. When tangling a file,
+emacs reads through each source code block, and if it has a =:tangle= header
+argument, it extracts it to the a file. For example, calling =org-babel-tangle=
+in a buffer with the following source block would create a file called =config.json=:
+
+#+begin_example
+#+begin_src json :tangle=config.json
+{
+  "name": "Frodo"
+}
+#+end_src
+#+end_example
+
+The core Babel functions (viewing, export, tangling, etc.) are language agnostic and will work even for languages that are not [[org-babel-langauges][explicitly supported]]. In the example above, even though we can't execute =json= blocks, we can still tangle them.
+
+A lot of nice things fall out of having a single document as the source of truth.
+The entire context is in one file, together with explanatory notes.
+This is great for people, and great for AI agents.
+
+By passing a TRAMP remote location to the =:tangle= parameter, we could use this
+mechanism to maintain server configuration, tangling files to many servers arbitrarily.
+
+However, there are some issues with doing this.
+
+First, it's verbose and not DRY. The same servers would show up in many paths, as long-ish connection strings.
+
+Second, emacs tangles the entire buffer at once[fn:1], with all its source code blocks. If some =:tangle= locations point to local files, and others to (maybe several) servers, things will get messy.
+
+[fn:1] You can narrow the buffer to tangle only part of a file, perhaps with =org-narrow-to-subtree= which improves matters somewhat.)
+
+
+Third, it's not clear how we  upload the same configuration to many machines (a common devops task).
+
+And most problematically, if something goes wrong - as it might with remote destinations rather than local -
+it may not be obvious which tangling operations were successful and which not, leaving servers in an unknown state.
+
+Out of the box, tangling does /almost/ everything we need, but it does not impose enough structure or oder.
+We want to implement some conventions on top of tangling.
+
+* Decisions
+
+** 1. Custom tangle command
+
+We could avoid a custom command by adding "advice" the =org-babel-tangle= command, so users would have nothing new to remember.
+
+However,
+
+1. It would be hard to circumvent the file scope difficulties mentioned above. If by default I want to 
+   apply all configuration changes to a machine, i.e. tangle several related files in one go,
+   I would have a lot to compute in the advice function, and it would be hard to understand
+   what was executed and what was not.
+
+2. It would rely in a lot of temporary, invisible, mutable state, and a lot of variable
+   rewriting on the fly, making it brittle.
+
+Probably better to implement a =devops-tangle= command, rather than advice on =org-babel-tangle=.  Roughly, this command should
+
+1. Copy entire buffer to a temp buffer
+2. Resolve =:dir= from heading's server tag
+3. Rewrite =:tangle= to full TRAMP path (=:tangle ~/foo.txt= to =:tangle /ssh:user@server:~/foo.txt=)
+4. Narrow temp buffer to heading
+5. Call =org-babel-tangle=
+
+A full buffer copy ensures =:var= refs to named blocks outside heading resolve
+correctly. (Even if we're narrowing and only executing the current heading.)
+
+** 2. Use =:tangle= header
+
+Which header argument should =devops-tangle= command use to determine the target server?
+
+It could use =#+NAME=. If =NAME= is a file, then add =:dir= to it and output =:tangle=. 
+For instance, this might upload =foo.txt= to the =server1=:
+
+#+begin_example
+
+  * Foo :server1:
+
+  #+NAME: ~/foo.txt
+  #+begin_src
+  foo contents
+  #+end_src
+
+#+end_example
+
+The format is nice: looks like a figure and its caption. However, itt makes global name collisions likely: If we are uploading files with the same names to different servers,multiple source code blocks would have the same name.
+
+As an alternative, we could have a custom variable like =:target=. It would require both a magic variable and a custom tangling function,
+making this inelegant. Also, it may break some intuitions people already have built up with =org-babel-tangle=
+locally.
+
+It seems best to use the standard header:  =:tangle ~/foo.txt=, and the existing tangling algorithm,
+which already uses this header.
+
+** 3. Heading is default scope
+
+The default tangle functionality is either too small (one source code block); or too big (entire file),
+with a somewhat mitigating feature in footnote 1.
+
+The devops.el package takes the convention that one heading = 1+ labeled servers. It's easier to see
+at a glance what is running where.
+
+Matching this convention:
+
+- =devops-tangle= should tangle current heading / server / servers.
+- =C-u devops-tangle= should tangle the entire buffer
+
+** 4. Use Noweb for templating
+
+Some configuration blocks will have computed references, for things such as machine names and
+secret references. 
+
+We could try passing =vars= into source code blocks. However, these are not text replacements, but rather integrate into each target language. As such, they work only work in [[org-babel-langauges][executable languages]]; interpolation syntax varies (for instance, in shell scripts, variables are =$foo= in source blocks, while in Python they are =foo=; and the output file will contain some setup code that is not in the original source code block.
+
+We could implement custom templating system on top of jinja, like the following snippet hallucinated by Google:
+
+#+begin_example
+
+#+NAME: my_data
+
+| Name  | Role      |
+|-------+-----------|
+| Alice | Developer |
+| Bob   | Designer  |
+
+#+BEGIN_SRC jinja :var data=my_data
+Members of the team:
+{% for row in data %}
+- {{ row[0] }} is the {{ row[1] }}
+{% endfor %}
+#+END_SRC
+
+#+end_example
+
+Although it seems useful, this doesn't exist.
+
+Org mode already has [[noweb]], which can include one block textually in another, and even evaluate a source block before including it. We could use it like this to upload an env file with a password.
+
+#+begin_example
+    
+    * Local
+    
+    #+name: db-pass
+    #+begin_src elisp
+    (auth-source-pick-first-password :host "db")
+    #+end_src
+    
+    * Server :server1:
+    
+    #+begin_src env :tangle ~/db.env :noweb yes
+    DB_PASSWORD=<<db-pass()>>
+    #+end_src
+
+#+end_example
+
+It seems noweb has enough features for basic templating.
+
+** 5. Fail fast on errors
+
+We are tangling multiple blocks at once. If one fails (e.g. TRAMP connection, permissions), we should stop
+immediately. We should let the user know which block failed, and we should know that previous blocks under the same heading completed successfully.
+
+** 6. Tangle to multiple servers
+
+This should upload the same file to =server1= and =server2=:
+
+#+begin_example
+
+  * Upload file :server1:server2:
+  
+  #+begin_src json
+  {
+    "name": "Frodo"
+  }
+  #+end_src
+
+#+end_example

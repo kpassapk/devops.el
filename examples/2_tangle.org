@@ -1,0 +1,39 @@
+#+SERVER: aly-2602-suite (app_server)
+#+TITLE: Example 2: Tangle remote files
+
+=devops.el= helps you create files in remote servers.
+
+Source blocks with a =:tangle= header arg will be written to
+the server resolved from the heading's tag.
+
+* Try it!
+
+** Upload my name                                                :app_server:
+
+Use =devops-tangle= in this heading to upload =~/foo.txt= to the =app_server=.
+
+#+name: username
+#+begin_src elisp
+(user-full-name)
+#+end_src
+
+#+name: emacs-version
+#+begin_src elisp
+(emacs-version)
+#+end_src
+
+#+begin_src json :tangle ~/foo.json :noweb yes
+{
+  "name": "<<username()>>"
+}
+#+end_src
+
+#+begin_src txt :tangle ~/emacs.txt :noweb yes
+<<emacs-version()>>
+#+end_src
+
+When the command finishes, you should see this in the Messages buffer:
+
+: Tangled 2 file(s) to app_server (aly-2602-suite)
+
+The two files should have been uploaded to the server.

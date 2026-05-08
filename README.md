@@ -1,12 +1,10 @@
 # devops.el: Org-based devops
 
-This package allows you to provision and manage infra
+This package allows you to provision and manage infra using org mode notebooks
 
 ## Requirements
 
 - magit
-- agent shell
-- Claude Code
 
 ## Installing
 

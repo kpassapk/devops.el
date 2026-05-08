@@ -24,6 +24,11 @@
 (require 'devops-podman)
 (require 'devops-lob)
 
+(defcustom devops-default-ssh-user nil
+  "The default server user."
+  :type 'string
+  :group 'devops)
+
 (defun devops-org-keywords (key)
   "Return all values for keyword KEY as a list."
   (cdr (assoc key (org-collect-keywords (list key)))))
@@ -38,42 +43,129 @@
   (delq nil (mapcar #'devops--parse-server-keyword
                     (devops-org-keywords "SERVER"))))
 
-(defun devops-resolve-server-for-tag (tag)
+(defun devops--resolve-server-for-tag (tag)
   "Look up TAG in #+SERVER keywords, return server name or nil."
   (cdr (assoc tag (devops-server-tag-alist))))
+
+(defun devops-resolve-server-for-tag (tag)
+  "Look up TAG in #+SERVER keywords, return server name or nil."
+  (devops--resolve-server-for-tag tag))
 
 (defun devops-set-header-args-from-tag ()
   "Set :header-args: :dir from the current heading's tag and #+SERVER mappings."
   (interactive)
   (let* ((tags (org-get-tags nil t))
-         (server (seq-some #'devops-resolve-server-for-tag tags)))
-    (if server
-        (org-entry-put nil "header-args" (format ":dir app@%s:" server))
+         (server (seq-some #'devops--resolve-server-for-tag tags))
+	 (dir (when server (format "/ssh:%s@%s:" devops-default-ssh-user server))))
+    (if dir
+        (org-entry-put nil "header-args" (format ":dir %s" dir))
       (user-error "No #+SERVER match for tags: %s" tags))))
 
-(defun devops--tangle-resolve-target ()
-  "Return (FILEPATH . BODY) for the source block at point."
-  (let* ((element (org-element-at-point))
-         (body (org-element-property :value element))
-         (header (org-element-property :parameters element))
-         (target (when (and header (string-match "target=\"\\([^\"]+\\)\"" header))
-                   (match-string 1 header)))
-         (info (org-babel-get-src-block-info 'light))
-         (params (nth 2 info))
-         (dir (cdr (assq :dir params))))
-    (unless target
-      (user-error "No target variable found in source block header"))
-    (unless dir
-      (user-error "No :dir property found"))
-    (cons (concat dir target) body)))
+(defun devops--inject-dir-from-tag (orig-fn &optional arg info params)
+  "Advise org-babel-execute-src-block to inject :dir from nearest heading tag."
+  (let* ((tags (org-get-tags nil t))
+	 (server (seq-some #'devops--resolve-server-for-tag tags))
+	 (dir (when server (format "/ssh:%s@%s:" devops-default-ssh-user server)))
+         (params (if dir
+                     (cons (cons :dir dir) params)
+                   params)))
+    (funcall orig-fn arg info params)))
 
-(defun devops-tangle-to-target ()
-  "Tangle source block at point to :dir + target path."
-  (interactive)
-  (pcase-let ((`(,filepath . ,body) (devops--tangle-resolve-target)))
-    (write-region body nil filepath)
-    (message "Wrote %s" filepath)))
+(advice-add 'org-babel-execute-src-block :around #'devops--inject-dir-from-tag)
 
+(defun devops--heading-server-tag ()
+  "Return (TAG . SERVER) for the first matching server tag on current heading.
+Searches heading's tags against #+SERVER keywords."
+  (let ((tags (org-get-tags nil t)))
+    (seq-some (lambda (tag)
+                (when-let* ((server (devops--resolve-server-for-tag tag)))
+                  (cons tag server)))
+              tags)))
+
+(defun devops--rewrite-tangle-paths (tramp-prefix)
+  "Rewrite :tangle header args in buffer to include TRAMP-PREFIX.
+Modifies buffer text. Skips :tangle no and already-absolute paths."
+  (save-excursion
+    (goto-char (point-max))
+    (while (re-search-backward
+            ":tangle +\\([^ \t\n]+\\)"
+            nil t)
+      (let ((path (match-string 1)))
+        (when (and (not (string= path "no"))
+                   (not (string-prefix-p "/" path)))
+          (replace-match (concat ":tangle " tramp-prefix path)))))))
+
+(defun devops--tangle-heading (source-buf heading-pos server tmp-file)
+  "Tangle HEADING-POS from SOURCE-BUF to SERVER using TMP-FILE as scratch.
+Returns number of files tangled, or nil."
+  (let ((tmp-buf (find-file-noselect tmp-file)))
+    (unwind-protect
+        (with-current-buffer tmp-buf
+          (let ((inhibit-read-only t))
+            (erase-buffer)
+            (insert-buffer-substring source-buf)
+            (goto-char heading-pos)
+            (org-narrow-to-subtree)
+            (let* ((tramp-prefix (format "/ssh:%s@%s:"
+                                         devops-default-ssh-user server))
+                   (files (progn
+                            (devops--rewrite-tangle-paths tramp-prefix)
+                            (org-babel-tangle))))
+              (widen)
+              (when files (length files)))))
+      (with-current-buffer tmp-buf
+        (set-buffer-modified-p nil)))))
+
+;;;###autoload
+(defun devops-tangle (&optional arg)
+  "Tangle current heading's source blocks to their remote server.
+Resolves the heading's server tag to a TRAMP path and rewrites
+:tangle header args before delegating to `org-babel-tangle'.
+
+With prefix ARG, tangle all headings in the buffer that have
+server tags."
+  (interactive "P")
+  (let ((source-buf (current-buffer))
+        (results nil)
+        (tmp-file (make-temp-file "devops-tangle-" nil ".org")))
+    (unwind-protect
+        (if arg
+            ;; Whole buffer: tangle each server-tagged heading
+            (org-map-entries
+             (lambda ()
+               (when-let* ((pair (devops--heading-server-tag)))
+                 (let* ((tag (car pair))
+                        (server (cdr pair))
+                        (heading-pos (point))
+                        (n (devops--tangle-heading
+                            source-buf heading-pos server tmp-file)))
+                   (when n
+                     (push (list tag server n) results))))))
+          ;; Single heading
+          (let ((pair (devops--heading-server-tag)))
+            (unless pair
+              (user-error "No #+SERVER match for tags on current heading"))
+            (let* ((tag (car pair))
+                   (server (cdr pair))
+                   (heading-pos (save-excursion
+                                  (org-back-to-heading t)
+                                  (point)))
+                   (n (devops--tangle-heading
+                       source-buf heading-pos server tmp-file)))
+              (when n
+                (push (list tag server n) results)))))
+      (when-let* ((buf (find-buffer-visiting tmp-file)))
+        (kill-buffer buf))
+      (delete-file tmp-file))
+    ;; Report
+    (if results
+        (message "%s"
+                 (mapconcat
+                  (lambda (r)
+                    (format "Tangled %d file(s) to %s (%s)"
+                            (nth 2 r) (nth 0 r) (nth 1 r)))
+                  (nreverse results) "; "))
+      (message "No files tangled"))))
 
 (defun devops-exec-in-notebook (block-name)
   "Execute BLOCK-NAME in the source deployment org file."
