@@ -50,7 +50,7 @@
     (org-back-to-heading)
     (devops-set-header-args-from-tag)
     (should (equal (org-entry-get nil "header-args")
-                   ":dir app@server1:"))))
+                   ":dir /ssh:app@server1:"))))
 
 (ert-deftest devops-set-header-args-from-tag-no-match-test ()
   "Error when no #+SERVER matches the heading's tags."
@@ -62,6 +62,86 @@
     (goto-char (point-max))
     (org-back-to-heading)
     (should-error (devops-set-header-args-from-tag)
+                  :type 'user-error)))
+
+(ert-deftest devops--heading-server-tag-test ()
+  "Find matching server tag on current heading."
+  (with-temp-buffer
+    (org-mode)
+    (insert "#+SERVER: server1 (source)\n"
+            "\n"
+            "* Deploy\t\t:source:\n")
+    (goto-char (point-max))
+    (org-back-to-heading)
+    (should (equal (devops--heading-server-tag)
+                   '("source" . "server1")))))
+
+(ert-deftest devops--heading-server-tag-no-match-test ()
+  "Return nil when heading tags don't match any server."
+  (with-temp-buffer
+    (org-mode)
+    (insert "#+SERVER: server1 (source)\n"
+            "\n"
+            "* Heading\t\t:other:\n")
+    (goto-char (point-max))
+    (org-back-to-heading)
+    (should (null (devops--heading-server-tag)))))
+
+(ert-deftest devops--rewrite-tangle-paths-test ()
+  "Rewrite :tangle paths to include TRAMP prefix."
+  (with-temp-buffer
+    (org-mode)
+    (insert "#+TITLE: Test\n"
+            "\n"
+            "* Heading\n"
+            "\n"
+            "#+begin_src sh :tangle ~/foo.txt\n"
+            "echo hello\n"
+            "#+end_src\n"
+            "\n"
+            "#+begin_src sh :tangle ~/bar.conf\n"
+            "key=val\n"
+            "#+end_src\n"
+            "\n"
+            "#+begin_src sh\n"
+            "echo no tangle\n"
+            "#+end_src\n")
+    (devops--rewrite-tangle-paths "/ssh:app@server1:")
+    (goto-char (point-min))
+    (should (search-forward ":tangle /ssh:app@server1:~/foo.txt" nil t))
+    (should (search-forward ":tangle /ssh:app@server1:~/bar.conf" nil t))
+    ;; Block without :tangle untouched
+    (goto-char (point-min))
+    (should-not (search-forward ":tangle /ssh:app@server1:no" nil t))))
+
+(ert-deftest devops--rewrite-tangle-paths-skip-absolute-test ()
+  "Don't rewrite :tangle paths that are already absolute."
+  (with-temp-buffer
+    (org-mode)
+    (insert "* Heading\n"
+            "\n"
+            "#+begin_src sh :tangle /ssh:app@server1:~/already.txt\n"
+            "echo hello\n"
+            "#+end_src\n")
+    (devops--rewrite-tangle-paths "/ssh:app@server1:")
+    (goto-char (point-min))
+    ;; Should not double-prefix
+    (should-not (search-forward "/ssh:app@server1:/ssh:" nil t))))
+
+(ert-deftest devops-tangle-no-server-tag-test ()
+  "Error when current heading has no matching server tag."
+  (with-temp-buffer
+    (org-mode)
+    (insert "#+SERVER: server1 (source)\n"
+            "\n"
+            "* Heading\t\t:unknown:\n"
+            "\n"
+            "#+begin_src sh :tangle ~/foo.txt\n"
+            "echo hello\n"
+            "#+end_src\n")
+    (goto-char (point-max))
+    (org-back-to-heading)
+    (should-error (devops-tangle)
                   :type 'user-error)))
 
 (provide 'devops-test)

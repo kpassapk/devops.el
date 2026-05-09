@@ -1,0 +1,58 @@
+#+SERVER: /ssh:user@example.com: (source)
+#+SERVER: /ssh:user@example.com: (target)
+#+TITLE: Running server commands
+
+=devops.el= helps you run commands on one or more named servers by declaring them at the the top of the file in this format.
+
+#+begin_example
+#+SERVER: server1.com (source)
+#+SERVER: server2.com (target)
+#+end_example
+
+Here, =server1.com= is the "source" server, and =server2.com= is the "target" server. There can be as many labeled =SERVER= blocks as we need.
+
+Normally, org-babel runs commands on servers whenever the =:dir= header argument
+is set to a remote location. To run =ls= on =server1.com=, we would write
+
+#+begin_example
+#+begin_src sh :dir /ssh:user@server1.com:
+ls
+#+end_src
+#+end_example
+
+With =devops.el=, we can run the same command by adding a tag to the nearest heading:
+
+#+begin_example
+** some-heading :source:
+
+#+begin_src
+  ls
+#+end_src
+
+#+end_example
+
+* Try it
+
+Instructions
+1. Modify the server blocks at the top of file (see caveats)
+2. Run =devops-set-header-args-from-tag=
+3. You should see header-args set as follows
+
+Try the same for =target=
+
+* List source                                                        :source:
+
+#+begin_src sh :results output
+ls
+#+end_src
+
+* List target                                                        :target:
+
+#+begin_src sh :results output
+ls
+#+end_src
+
+
+* Caveats
+
+- You should be able to ssh into the server without a password
