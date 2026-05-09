@@ -14,15 +14,18 @@ This package allows you to provision and manage infra using org mode notebooks
   :vc (:url "https://github.com/unifica-ai/devops.el"))
 ```
 
-## tools.org — Per-project Library of Babel
+## devops-lob
 
 Any project with a `tools.org` at its root can expose named org-babel blocks as reusable tools. `devops-lob` loads and tracks these per-project so they don't pollute other projects.
 
 ### Setup
 
 ```elisp
-(require 'devops-lob)
-(devops-lob-auto-mode 1)  ; auto-load on find-file
+(use-package devops
+  :ensure t
+  :vc (:url "https://github.com/unifica-ai/devops.el")
+  :hook
+  (after-init . (lambda () (devops-lob-auto-mode 1))))
 ```
 
 With `devops-lob-auto-mode` enabled, opening any file in a project that has `tools.org` automatically loads its named blocks into the org-babel Library of Babel.

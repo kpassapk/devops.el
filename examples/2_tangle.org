@@ -1,4 +1,4 @@
-#+SERVER: aly-2602-suite (app_server)
+#+SERVER: /ssh:user@example.com: (app_server)
 #+TITLE: Example 2: Tangle remote files
 
 =devops.el= helps you create files in remote servers.

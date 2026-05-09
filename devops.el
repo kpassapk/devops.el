@@ -24,11 +24,6 @@
 (require 'devops-podman)
 (require 'devops-lob)
 
-(defcustom devops-default-ssh-user nil
-  "The default server user."
-  :type 'string
-  :group 'devops)
-
 (defun devops-org-keywords (key)
   "Return all values for keyword KEY as a list."
   (cdr (assoc key (org-collect-keywords (list key)))))
@@ -55,19 +50,17 @@
   "Set :header-args: :dir from the current heading's tag and #+SERVER mappings."
   (interactive)
   (let* ((tags (org-get-tags nil t))
-         (server (seq-some #'devops--resolve-server-for-tag tags))
-	 (dir (when server (format "/ssh:%s@%s:" devops-default-ssh-user server))))
-    (if dir
-        (org-entry-put nil "header-args" (format ":dir %s" dir))
+         (server (seq-some #'devops--resolve-server-for-tag tags)))
+    (if server
+        (org-entry-put nil "header-args" (format ":dir %s" server))
       (user-error "No #+SERVER match for tags: %s" tags))))
 
 (defun devops--inject-dir-from-tag (orig-fn &optional arg info params)
   "Advise org-babel-execute-src-block to inject :dir from nearest heading tag."
   (let* ((tags (org-get-tags nil t))
 	 (server (seq-some #'devops--resolve-server-for-tag tags))
-	 (dir (when server (format "/ssh:%s@%s:" devops-default-ssh-user server)))
-         (params (if dir
-                     (cons (cons :dir dir) params)
+         (params (if server
+                     (cons (cons :dir server) params)
                    params)))
     (funcall orig-fn arg info params)))
 
@@ -106,10 +99,8 @@ Returns number of files tangled, or nil."
             (insert-buffer-substring source-buf)
             (goto-char heading-pos)
             (org-narrow-to-subtree)
-            (let* ((tramp-prefix (format "/ssh:%s@%s:"
-                                         devops-default-ssh-user server))
-                   (files (progn
-                            (devops--rewrite-tangle-paths tramp-prefix)
+            (let* ((files (progn
+                            (devops--rewrite-tangle-paths server)
                             (org-babel-tangle))))
               (widen)
               (when files (length files)))))
@@ -252,7 +243,7 @@ BODY is the source block content to copy to clipboard."
    ((derived-mode-p 'dired-mode)
     (dired-current-directory))
    ((derived-mode-p 'org-mode)
-    (when-let ((info (org-babel-get-src-block-info 'light)))
+    (when-let* ((info (org-babel-get-src-block-info 'light)))
       (let ((dir (cdr (assq :dir (nth 2 info)))))
         (when dir (expand-file-name dir)))))
    (buffer-file-name
@@ -261,7 +252,7 @@ BODY is the source block content to copy to clipboard."
 (defun devops-src-block-env-vars ()
   "Return alist of evaluated :var params from current src block."
   (when (derived-mode-p 'org-mode)
-    (when-let ((info (org-babel-get-src-block-info)))
+    (when-let* ((info (org-babel-get-src-block-info)))
       (let ((params (nth 2 info)))
         (delq nil
               (mapcar (lambda (p)
@@ -278,7 +269,7 @@ BODY is the source block content to copy to clipboard."
 (defun devops-src-block-body ()
   "Return the body of the current src block, or nil."
   (when (derived-mode-p 'org-mode)
-    (when-let ((info (org-babel-get-src-block-info 'light)))
+    (when-let* ((info (org-babel-get-src-block-info 'light)))
       (let ((body (org-trim (nth 1 info))))
         (unless (string-empty-p body) body)))))
 
