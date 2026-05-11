@@ -42,10 +42,6 @@
   "Look up TAG in #+SERVER keywords, return server name or nil."
   (cdr (assoc tag (devops-server-tag-alist))))
 
-(defun devops-resolve-server-for-tag (tag)
-  "Look up TAG in #+SERVER keywords, return server name or nil."
-  (devops--resolve-server-for-tag tag))
-
 (defun devops-set-header-args-from-tag ()
   "Set :header-args: :dir from the current heading's tag and #+SERVER mappings."
   (interactive)
@@ -55,6 +51,7 @@
         (org-entry-put nil "header-args" (format ":dir %s" server))
       (user-error "No #+SERVER match for tags: %s" tags))))
 
+;; TODO change to use temporary buffer?
 (defun devops--inject-dir-from-tag (orig-fn &optional arg info params)
   "Advise org-babel-execute-src-block to inject :dir from nearest heading tag."
   (let* ((tags (org-get-tags nil t))
@@ -186,14 +183,10 @@ Filter by REGEXP if provided."
                             (string-match-p regexp (symbol-name (car entry)))))
                       org-babel-library-of-babel)))
 
-(defun devops-open-ghostty-at-dir (dir &optional env-vars body)
+(defun devops--ghostty-command (dir &optional env-vars)
   "Open Ghostty terminal at current directory.
 If directory is remote (TRAMP), SSH into that server.
-ENV-VARS is an alist of (NAME . VALUE) to export.
-BODY is the source block content to copy to clipboard."
-  (when body
-    (kill-new body)
-    (message "Source block copied to kill ring."))
+ENV-VARS is an alist of (NAME . VALUE) to export."
   (if (file-remote-p dir)
       (let* ((shell "$SHELL")
              (tramp-vec (tramp-dissect-file-name dir))
@@ -230,24 +223,15 @@ BODY is the source block content to copy to clipboard."
                           env-vars
                           " && "))))
       (if env-exports
-          (call-process "ghostty" nil 0 nil
+          '("ghostty" nil 0 nil
                         (concat "--working-directory=" dir)
                         "-e" "bash" "-c"
                         (concat env-exports " && exec $SHELL"))
-        (call-process "ghostty" nil 0 nil
-                      (concat "--working-directory=" dir))))))
+        ("ghostty" nil 0 nil
+         (concat "--working-directory=" dir))))))
 
-(defun devops-context-directory ()
-  "Return contextual directory: src block :dir, dired dir, or default."
-  (cond
-   ((derived-mode-p 'dired-mode)
-    (dired-current-directory))
-   ((derived-mode-p 'org-mode)
-    (when-let* ((info (org-babel-get-src-block-info 'light)))
-      (let ((dir (cdr (assq :dir (nth 2 info)))))
-        (when dir (expand-file-name dir)))))
-   (buffer-file-name
-    (file-name-directory buffer-file-name))))
+(defun devops--open-ghostty-at-dir (dir &optional env-vars)
+  (call-process (devops--ghostty-command env-vars)))
 
 (defun devops-src-block-env-vars ()
   "Return alist of evaluated :var params from current src block."
@@ -276,12 +260,16 @@ BODY is the source block content to copy to clipboard."
 ;;;###autoload
 (defun devops-open-ghostty-dwim ()
   "Open Ghostty at contextual directory.
-In a src block: copies body to clipboard and exports :var env vars."
+In a src block, if the : copies body to clipboard and exports :var env vars."
   (interactive)
-  (let ((dir (or (devops-context-directory) default-directory))
-        (env-vars (devops-src-block-env-vars))
-        (body (devops-src-block-body)))
-    (devops-open-ghostty-at-dir dir env-vars body)))
+  (let* ((tags (org-get-tags nil t))
+	 (server (seq-some #'devops-resolve-server-for-tag tags))
+         (env-vars (devops-src-block-env-vars))
+	 (lang (org-element-property :language (org-element-at-point))))
+    (when (or (string= lang "shell") (string= lang "sh"))
+      (progn (kill-new (devops-src-block-body))
+	     (message "Source block copied to kill ring.")))
+    (devops--open-ghostty-at-dir server env-vars)))
 
 (defun devops--new-timestamp ()
   "Creates a new timestamp by formatting the current time."
