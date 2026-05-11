@@ -77,7 +77,7 @@ Searches heading's tags against #+SERVER keywords."
 
 (defun devops--rewrite-tangle-paths (tramp-prefix)
   "Rewrite :tangle header args in buffer to include TRAMP-PREFIX.
-Modifies buffer text. Skips :tangle no and already-absolute paths."
+Modifies buffer text. Skips :tangle no and paths already containing a TRAMP prefix."
   (save-excursion
     (goto-char (point-max))
     (while (re-search-backward
@@ -85,7 +85,7 @@ Modifies buffer text. Skips :tangle no and already-absolute paths."
             nil t)
       (let ((path (match-string 1)))
         (when (and (not (string= path "no"))
-                   (not (string-prefix-p "/" path)))
+                   (not (tramp-tramp-file-p path)))
           (replace-match (concat ":tangle " tramp-prefix path)))))))
 
 (defun devops--tangle-heading (source-buf heading-pos server tmp-file)
