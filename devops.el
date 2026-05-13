@@ -184,9 +184,6 @@ Filter by REGEXP if provided."
                       org-babel-library-of-babel)))
 
 (defun devops--ghostty-command (dir &optional env-vars)
-  "Open Ghostty terminal at current directory.
-If directory is remote (TRAMP), SSH into that server.
-ENV-VARS is an alist of (NAME . VALUE) to export."
   (if (file-remote-p dir)
       (let* ((shell "$SHELL")
              (tramp-vec (tramp-dissect-file-name dir))
@@ -211,8 +208,9 @@ ENV-VARS is an alist of (NAME . VALUE) to export."
                                  env-exports
                                  shell))
                           " && ")))
-        (call-process "ghostty" nil 0 nil
-                      "-e" "ssh" "-t" ssh-target remote-cmd))
+
+        `("ghostty" nil 0 nil
+                      "-e" "ssh" "-t" ,ssh-target ,remote-cmd))
     (let ((env-exports (when env-vars
                          (mapconcat
                           (lambda (pair)
@@ -223,15 +221,15 @@ ENV-VARS is an alist of (NAME . VALUE) to export."
                           env-vars
                           " && "))))
       (if env-exports
-          '("ghostty" nil 0 nil
-                        (concat "--working-directory=" dir)
-                        "-e" "bash" "-c"
-                        (concat env-exports " && exec $SHELL"))
-        ("ghostty" nil 0 nil
-         (concat "--working-directory=" dir))))))
+	  (let ((wd (concat "--working-directory=" dir))
+		(cmd (concat env-exports " && exec $SHELL")))
+            `("ghostty" nil 0 nil ,wd "-e" "bash" "-c" ,cmd))
+        `("ghostty" nil 0 nil ,(concat "--working-directory=" dir))))))
 
 (defun devops--open-ghostty-at-dir (dir &optional env-vars)
-  (call-process (devops--ghostty-command env-vars)))
+  (let ((ghostty (devops--ghostty-command dir env-vars)))
+    (message (format "Calling process:\n%s" ghostty))
+    (apply 'call-process ghostty)))
 
 (defun devops-src-block-env-vars ()
   "Return alist of evaluated :var params from current src block."
@@ -267,8 +265,8 @@ In a src block, if the : copies body to clipboard and exports :var env vars."
          (env-vars (devops-src-block-env-vars))
 	 (lang (org-element-property :language (org-element-at-point))))
     (when (or (string= lang "shell") (string= lang "sh"))
-      (progn (kill-new (devops-src-block-body))
-	     (message "Source block copied to kill ring.")))
+      (kill-new (devops-src-block-body))
+      (message "Source block copied to kill ring."))
     (devops--open-ghostty-at-dir server env-vars)))
 
 (defun devops--new-timestamp ()
