@@ -104,6 +104,31 @@ Returns number of files tangled, or nil."
       (with-current-buffer tmp-buf
         (set-buffer-modified-p nil)))))
 
+(defun devops--tangle-spec (&optional arg)
+  "Return a tangle plan for the current buffer.
+Each entry is a plist (:tag TAG :server SERVER :heading-pos POS).
+
+With prefix ARG non-nil, include all server-tagged headings.
+Otherwise include only the current heading."
+  (if arg
+      (let (specs)
+        (org-map-entries
+         (lambda ()
+           (when-let* ((pair (devops--heading-server-tag)))
+             (push (list :tag (car pair)
+                         :server (cdr pair)
+                         :heading-pos (point))
+                   specs))))
+        (nreverse specs))
+    (let ((pair (devops--heading-server-tag)))
+      (unless pair
+        (user-error "No #+SERVER match for tags on current heading"))
+      (list (list :tag (car pair)
+                  :server (cdr pair)
+                  :heading-pos (save-excursion
+                                 (org-back-to-heading t)
+                                 (point)))))))
+
 ;;;###autoload
 (defun devops-tangle (&optional arg)
   "Tangle current heading's source blocks to their remote server.
@@ -114,34 +139,18 @@ With prefix ARG, tangle all headings in the buffer that have
 server tags."
   (interactive "P")
   (let ((source-buf (current-buffer))
+        (spec (devops--tangle-spec arg))
         (results nil)
         (tmp-file (make-temp-file "devops-tangle-" nil ".org")))
     (unwind-protect
-        (if arg
-            ;; Whole buffer: tangle each server-tagged heading
-            (org-map-entries
-             (lambda ()
-               (when-let* ((pair (devops--heading-server-tag)))
-                 (let* ((tag (car pair))
-                        (server (cdr pair))
-                        (heading-pos (point))
-                        (n (devops--tangle-heading
-                            source-buf heading-pos server tmp-file)))
-                   (when n
-                     (push (list tag server n) results))))))
-          ;; Single heading
-          (let ((pair (devops--heading-server-tag)))
-            (unless pair
-              (user-error "No #+SERVER match for tags on current heading"))
-            (let* ((tag (car pair))
-                   (server (cdr pair))
-                   (heading-pos (save-excursion
-                                  (org-back-to-heading t)
-                                  (point)))
-                   (n (devops--tangle-heading
-                       source-buf heading-pos server tmp-file)))
-              (when n
-                (push (list tag server n) results)))))
+        (dolist (entry spec)
+          (let* ((tag (plist-get entry :tag))
+                 (server (plist-get entry :server))
+                 (heading-pos (plist-get entry :heading-pos))
+                 (n (devops--tangle-heading
+                     source-buf heading-pos server tmp-file)))
+            (when n
+              (push (list tag server n) results))))
       (when-let* ((buf (find-buffer-visiting tmp-file)))
         (kill-buffer buf))
       (delete-file tmp-file))
@@ -261,7 +270,7 @@ Filter by REGEXP if provided."
 In a src block, if the : copies body to clipboard and exports :var env vars."
   (interactive)
   (let* ((tags (org-get-tags nil t))
-	 (server (seq-some #'devops-resolve-server-for-tag tags))
+	 (server (seq-some #'devops--resolve-server-for-tag tags))
          (env-vars (devops-src-block-env-vars))
 	 (lang (org-element-property :language (org-element-at-point))))
     (when (or (string= lang "shell") (string= lang "sh"))
