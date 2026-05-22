@@ -164,6 +164,32 @@ server tags."
                   (nreverse results) "; "))
       (message "No files tangled"))))
 
+(defun devops--tangle-paths ()
+  "Return a list of file paths expanded with each server"
+  (let* ((spec (devops--tangle-spec))
+         (params (nth 2 (org-babel-get-src-block-info)))
+         (path (cdr (assq :tangle params))))
+    (if (or (not path)
+            (string= path "no")
+            (tramp-tramp-file-p path)) 
+        nil
+      (mapcar (lambda (entry)
+                (let ((server (plist-get entry :server)))
+                  (concat server path)))
+              spec))))
+
+(defun devops-tangle-visit-file ()
+  (interactive)
+  (let ((paths (devops--tangle-paths)))
+    (cond
+     ((= 1 (length paths))
+      (find-file (car paths)))
+     ((> (length paths) 1)
+      (let ((chosen-file (completing-read "Visit: " paths nil t)))
+        (find-file chosen-file)))
+     (t
+      (message "No tangle paths found.")))))
+
 (defun devops-exec-in-notebook (block-name)
   "Execute BLOCK-NAME in the source deployment org file."
   (with-current-buffer (find-file-noselect devops-notebook)
