@@ -1,4 +1,4 @@
-;; devops.el - Development server -*- lexical-binding: t; -*-
+;; devops.el - Development target -*- lexical-binding: t; -*-
 
 ;; Copyright (C) 2026 Kyle S Passarelli
 
@@ -20,12 +20,12 @@
 ;; `devops.el' offers utilities for running commands on local and remote
 ;; machines using org mode.
 
-(require 'devops-migration)
-(require 'devops-podman)
-(require 'devops-lob)
+(defcustom devops-terminal-program 'ghostty
+  "Terminal program to use for externally opening target locations"
+  :type '(choice (const ghostty)))
 
-(defun devops--parse-server-keyword (value)
-  "Parse a #+SERVER value like \"server1 (source)\" into (TAG . SERVER)."
+(defun devops--parse-target-keyword (value)
+  "Parse a #+TARGET value like \"target1 (source)\" into (TAG . TARGET)."
   (when (string-match "\\`\\([^ ]+\\) +(\\([^)]+\\))\\'" value)
     (cons (match-string 2 value) (match-string 1 value))))
 
@@ -33,60 +33,58 @@
   "Return all values for keyword KEY as a list."
   (cdr (assoc key (org-collect-keywords (list key)))))
 
-(defun devops-server-tag-alist ()
-  "Return alist of (TAG . SERVER) from #+SERVER keywords in current buffer."
-  (delq nil (mapcar #'devops--parse-server-keyword
-                    (devops--org-keywords "SERVER"))))
+(defun devops-target-tag-alist ()
+  "Return alist of (TAG . TARGET) from #+TARGET keywords in current buffer."
+  (delq nil (mapcar #'devops--parse-target-keyword
+                    (devops--org-keywords "TARGET"))))
 
-(defun devops--resolve-server-for-tag (tag)
-  "Look up TAG in #+SERVER keywords, return server name or nil."
-  (cdr (assoc tag (devops-server-tag-alist))))
+(defun devops--resolve-target-for-tag (tag)
+  "Look up TAG in #+TARGET keywords, return target name or nil."
+  (cdr (assoc tag (devops-target-tag-alist))))
 
-(defun devops--heading-server-dir ()
-  "Return :dir from the current heading's tags and #+SERVER mappings.
-If there is more than one server, use completing-read, allowing the user to select one."
+(defun devops--heading-target-tags ()
+  "Return list of (TAG . TARGET) for all matching tags on current heading.
+Searches heading's tags against all #+TARGET keywords."
+  (let ((tags (org-get-tags nil nil)))
+    (delq nil
+          (mapcar (lambda (tag)
+                    (when-let* ((target (devops--resolve-target-for-tag tag)))
+                      (cons tag target)))
+                  tags))))
+
+(defun devops--heading-target-dir ()
+  "Return :dir from the current heading's tags and #+TARGET mappings.
+If there is more than one target, use completing-read, allowing the user to select one."
   (interactive)
-  (let ((matches (devops--heading-server-tags)))
+  (let ((matches (devops--heading-target-tags)))
     (cond
      ((null matches)
-      (user-error "No #+SERVER match"))
+      (user-error "No #+TARGET match"))
      ((= 1 (length matches))
       (cdr (car matches)))
      (t
       (let* ((options (mapcar (lambda (pair)
-                                (cons (format "%s -> %s" (car pair) (cdr pair))
+                                (cons (format "%s: %s" (car pair) (cdr pair))
                                       (cdr pair)))
                               matches))
-             (selected (completing-read "Choose server: " (mapcar #'car options) nil t)))
+             (selected (completing-read "Choose target: " (mapcar #'car options) nil t)))
         (cdr (assoc selected options)))))))
 
-(defun devops-set-header-args-from-tag ()
-  "Set :header-args: :dir from the current heading's tag and #+SERVER mappings."
+(defun devops-set-header-args-from-tags ()
+  "Set :header-args: :dir from the current heading's tag and #+TARGET mappings."
   (interactive)
-  (let ((dir (devops--heading-server-dir)))
+  (let ((dir (devops--heading-target-dir)))
     (org-entry-put nil "header-args" (format ":dir %s" dir))))
 
-;; TODO change to use temporary buffer?
-(defun devops--inject-dir-from-tag (orig-fn &optional arg info params)
-  "Advise org-babel-execute-src-block to inject :dir from nearest heading tag."
-  (let* ((tags (org-get-tags nil nil))
-	 (server (seq-some #'devops--resolve-server-for-tag tags))
-         (params (if server
-                     (cons (cons :dir server) params)
+(defun devops--inject-header-args-from-tags (orig-fn &optional arg info params)
+  "Advise org-babel-execute-src-block to inject :dir"
+  (let* ((dir (devops--heading-target-dir))
+         (params (if dir
+                     (cons (cons :dir dir) params)
                    params)))
     (funcall orig-fn arg info params)))
 
-(advice-add 'org-babel-execute-src-block :around #'devops--inject-dir-from-tag)
-
-(defun devops--heading-server-tags ()
-  "Return list of (TAG . SERVER) for all matching tags on current heading.
-Searches heading's tags against all #+SERVER keywords."
-  (let ((tags (org-get-tags nil nil)))
-    (delq nil
-          (mapcar (lambda (tag)
-                    (when-let* ((server (devops--resolve-server-for-tag tag)))
-                      (cons tag server)))
-                  tags))))
+(advice-add 'org-babel-execute-src-block :around #'devops--inject-header-args-from-tags)
 
 (defun devops--rewrite-tangle-paths (tramp-prefix)
   "Rewrite :tangle header args in buffer to include TRAMP-PREFIX.
@@ -101,8 +99,8 @@ Modifies buffer text. Skips :tangle no and paths already containing a TRAMP pref
                    (not (tramp-tramp-file-p path)))
           (replace-match (concat ":tangle " tramp-prefix path)))))))
 
-(defun devops--tangle-heading (source-buf heading-pos server)
-  "Tangle subtree at HEADING-POS from SOURCE-BUF to SERVER.
+(defun devops--tangle-heading (source-buf heading-pos target)
+  "Tangle subtree at HEADING-POS from SOURCE-BUF to TARGET.
 Returns number of files tangled, or nil."
   (let* ((tmp-file (make-temp-file "devops-tangle-" nil ".org"))
 	 (tmp-buf  (find-file-noselect tmp-file)))
@@ -114,7 +112,7 @@ Returns number of files tangled, or nil."
             (goto-char heading-pos)
             (org-narrow-to-subtree)
             (let* ((files (progn
-                            (devops--rewrite-tangle-paths server)
+                            (devops--rewrite-tangle-paths target)
                             (org-babel-tangle))))
               (widen)
               (when files (length files)))))
@@ -125,38 +123,38 @@ Returns number of files tangled, or nil."
 
 (defun devops--tangle-spec (&optional arg)
   "Return a tangle plan for the current buffer.
-Each entry is a plist (:tag TAG :server SERVER :heading-pos POS).
+Each entry is a plist (:tag TAG :target TARGET :heading-pos POS).
 
-With prefix ARG non-nil, include all server-tagged headings.
+With prefix ARG non-nil, include all target-tagged headings.
 Otherwise include only the current heading."
   (if arg
       (let (specs)
         (org-map-entries
          (lambda ()
-           (dolist (pair (devops--heading-server-tags))
+           (dolist (pair (devops--heading-target-tags))
              (push (list :tag (car pair)
-                         :server (cdr pair)
+                         :target (cdr pair)
                          :heading-pos (point))
                    specs))))
         (nreverse specs))
-    (let ((pairs (devops--heading-server-tags)))
+    (let ((pairs (devops--heading-target-tags)))
       (unless pairs
-        (user-error "No #+SERVER match for tags on current heading"))
+        (user-error "No #+TARGET match for tags on current heading"))
       (let ((pos (save-excursion (org-back-to-heading t) (point))))
         (mapcar (lambda (pair)
                   (list :tag (car pair)
-                        :server (cdr pair)
+                        :target (cdr pair)
                         :heading-pos pos))
                 pairs)))))
 
 ;;;###autoload
 (defun devops-tangle (&optional arg)
-  "Tangle current heading's source blocks to remote server(s).
-Resolves the heading's server tag to a TRAMP path and rewrites
+  "Tangle current heading's source blocks to remote target(s).
+Resolves the heading's target tag to a TRAMP path and rewrites
 :tangle header args before delegating to `org-babel-tangle'.
 
 With prefix ARG, tangle all headings in the buffer that have
-server tags."
+target tags."
   (interactive "P")
   (let ((source-buf (current-buffer))
         (spec (devops--tangle-spec arg))
@@ -164,12 +162,12 @@ server tags."
     (unwind-protect
         (dolist (entry spec)
           (let* ((tag (plist-get entry :tag))
-                 (server (plist-get entry :server))
+                 (target (plist-get entry :target))
                  (heading-pos (plist-get entry :heading-pos))
                  (n (devops--tangle-heading
-                     source-buf heading-pos server)))
+                     source-buf heading-pos target)))
             (when n
-              (push (list tag server n) results)))))
+              (push (list tag target n) results)))))
 
     ;; Report
     (if results
@@ -182,7 +180,7 @@ server tags."
       (message "No files tangled"))))
 
 (defun devops--tangle-paths ()
-  "Return a list of file paths expanded with each server"
+  "Return a list of file paths expanded with each target"
   (let* ((spec (devops--tangle-spec))
          (params (nth 2 (org-babel-get-src-block-info)))
          (path (cdr (assq :tangle params))))
@@ -191,8 +189,8 @@ server tags."
             (tramp-tramp-file-p path)) 
         nil
       (mapcar (lambda (entry)
-                (let ((server (plist-get entry :server)))
-                  (concat server path)))
+                (let ((target (plist-get entry :target)))
+                  (concat target path)))
               spec))))
 
 (defun devops-tangle-visit-file ()
@@ -236,52 +234,40 @@ Filter by REGEXP if provided."
                       org-babel-library-of-babel)))
 
 (defun devops--ghostty-command (dir &optional env-vars)
-  (if (file-remote-p dir)
-      (let* ((shell "$SHELL")
-             (tramp-vec (tramp-dissect-file-name dir))
-             (user (tramp-file-name-user tramp-vec))
-             (host (tramp-file-name-host tramp-vec))
-             (remote-dir (tramp-file-name-localname tramp-vec))
-             (ssh-target (if user (concat user "@" host) host))
-             (env-exports (if env-vars
-                              (mapconcat
-                               (lambda (pair)
-                                 (format "export %s=%s"
-                                         (car pair)
-                                         (shell-quote-argument
-                                          (format "%s" (cdr pair)))))
-                               env-vars
-                               " && ")
-                            nil))
-             (remote-cmd (string-join
-                          (delq nil
-                                (list
-                                 (concat "cd " (shell-quote-argument remote-dir))
-                                 env-exports
-                                 shell))
-                          " && ")))
-
-        `("ghostty" nil 0 nil
-                      "-e" "ssh" "-t" ,ssh-target ,remote-cmd))
-    (let ((env-exports (when env-vars
-                         (mapconcat
-                          (lambda (pair)
-                            (format "export %s=%s"
-                                    (car pair)
-                                    (shell-quote-argument
-                                     (format "%s" (cdr pair)))))
-                          env-vars
-                          " && "))))
+  (let ((env-exports (when env-vars
+                       (mapconcat
+                        (lambda (pair)
+                          (format "export %s=%s"
+                                  (car pair)
+                                  (shell-quote-argument
+                                   (format "%s" (cdr pair)))))
+                        env-vars
+                        " && "))))
+    (if (file-remote-p dir)
+        (let* ((shell "$SHELL")
+               (tramp-vec (tramp-dissect-file-name dir))
+               (user (tramp-file-name-user tramp-vec))
+               (host (tramp-file-name-host tramp-vec))
+               (remote-dir (tramp-file-name-localname tramp-vec))
+               (ssh-target (if user (concat user "@" host) host))
+               (remote-cmd (string-join
+                            (delq nil
+                                  (list
+                                   (concat "cd " (shell-quote-argument remote-dir))
+                                   env-exports
+                                   shell))
+                            " && ")))
+          `("ghostty" "-e" "ssh" "-t" ,ssh-target ,remote-cmd))
       (if env-exports
-	  (let ((wd (concat "--working-directory=" dir))
-		(cmd (concat env-exports " && exec $SHELL")))
-            `("ghostty" nil 0 nil ,wd "-e" "bash" "-c" ,cmd))
-        `("ghostty" nil 0 nil ,(concat "--working-directory=" dir))))))
+          `("ghostty" ,(concat "--working-directory=" dir) "-e" "bash" "-c" ,(concat env-exports " && exec $SHELL"))
+        `("ghostty" ,(concat "--working-directory=" dir))))))
 
-(defun devops--open-ghostty-at-dir (dir &optional env-vars)
-  (let ((ghostty (devops--ghostty-command dir env-vars)))
-    (message (format "Calling process:\n%s" ghostty))
-    (apply 'call-process ghostty)))
+(defun devops--open-terminal-at-dir (dir &optional env-vars)
+  (pcase devops-terminal-program
+    ('ghostty
+     (let ((ghostty (devops--ghostty-command dir env-vars)))
+       (message (format "Calling process:\n%s" (string-join ghostty " ")))
+       (apply #'call-process (car ghostty) nil nil nil (cdr ghostty))))))
 
 (defun devops-src-block-env-vars ()
   "Return alist of evaluated :var params from current src block."
@@ -308,17 +294,17 @@ Filter by REGEXP if provided."
         (unless (string-empty-p body) body)))))
 
 ;;;###autoload
-(defun devops-open-ghostty-dwim ()
+(defun devops-open-terminal-dwim ()
   "Open Ghostty at contextual directory.
 In a src block, if the : copies body to clipboard and exports :var env vars."
   (interactive)
-  (let* ((dir (devops--heading-server-dir))
+  (let* ((dir (devops--heading-target-dir))
          (env-vars (devops-src-block-env-vars))
 	 (lang (org-element-property :language (org-element-at-point))))
     (when (or (string= lang "shell") (string= lang "sh"))
       (kill-new (devops-src-block-body))
       (message "Source block copied to kill ring."))
-    (devops--open-ghostty-at-dir dir env-vars)))
+    (devops--open-terminal-at-dir dir env-vars)))
 
 (defun devops--new-timestamp ()
   "Creates a new timestamp by formatting the current time."
@@ -336,7 +322,7 @@ In a src block, if the : copies body to clipboard and exports :var env vars."
   "Resolve auth-source passwords for ROWS against AUTH-HOST.
 Each row is (KEY AUTH-USER). Returns ((KEY PASSWORD) ...).
 Binds `default-directory' locally so auth-source (1password)
-always runs `op' on the local server, not over TRAMP."
+always runs `op' on the local target, not over TRAMP."
   (let ((default-directory "~"))
     (mapcar (lambda (row)
               (list (car row)
