@@ -1,6 +1,6 @@
 ;; devops.el - Development server -*- lexical-binding: t; -*-
 
-;; Copyright (C) Kyle S Passarelli
+;; Copyright (C) 2026 Kyle S Passarelli
 
 ;; This package is free software; you can redistribute it and/or modify
 ;; it under the terms of the GNU General Public License as published by
@@ -24,37 +24,52 @@
 (require 'devops-podman)
 (require 'devops-lob)
 
-(defun devops-org-keywords (key)
-  "Return all values for keyword KEY as a list."
-  (cdr (assoc key (org-collect-keywords (list key)))))
-
 (defun devops--parse-server-keyword (value)
   "Parse a #+SERVER value like \"server1 (source)\" into (TAG . SERVER)."
   (when (string-match "\\`\\([^ ]+\\) +(\\([^)]+\\))\\'" value)
     (cons (match-string 2 value) (match-string 1 value))))
 
+(defun devops--org-keywords (key)
+  "Return all values for keyword KEY as a list."
+  (cdr (assoc key (org-collect-keywords (list key)))))
+
 (defun devops-server-tag-alist ()
   "Return alist of (TAG . SERVER) from #+SERVER keywords in current buffer."
   (delq nil (mapcar #'devops--parse-server-keyword
-                    (devops-org-keywords "SERVER"))))
+                    (devops--org-keywords "SERVER"))))
 
 (defun devops--resolve-server-for-tag (tag)
   "Look up TAG in #+SERVER keywords, return server name or nil."
   (cdr (assoc tag (devops-server-tag-alist))))
 
+(defun devops--heading-server-dir ()
+  "Return :dir from the current heading's tags and #+SERVER mappings.
+If there is more than one server, use completing-read, allowing the user to select one."
+  (interactive)
+  (let ((matches (devops--heading-server-tags)))
+    (cond
+     ((null matches)
+      (user-error "No #+SERVER match"))
+     ((= 1 (length matches))
+      (cdr (car matches)))
+     (t
+      (let* ((options (mapcar (lambda (pair)
+                                (cons (format "%s -> %s" (car pair) (cdr pair))
+                                      (cdr pair)))
+                              matches))
+             (selected (completing-read "Choose server: " (mapcar #'car options) nil t)))
+        (cdr (assoc selected options)))))))
+
 (defun devops-set-header-args-from-tag ()
   "Set :header-args: :dir from the current heading's tag and #+SERVER mappings."
   (interactive)
-  (let* ((tags (org-get-tags nil t))
-         (server (seq-some #'devops--resolve-server-for-tag tags)))
-    (if server
-        (org-entry-put nil "header-args" (format ":dir %s" server))
-      (user-error "No #+SERVER match for tags: %s" tags))))
+  (let ((dir (devops--heading-server-dir)))
+    (org-entry-put nil "header-args" (format ":dir %s" dir))))
 
 ;; TODO change to use temporary buffer?
 (defun devops--inject-dir-from-tag (orig-fn &optional arg info params)
   "Advise org-babel-execute-src-block to inject :dir from nearest heading tag."
-  (let* ((tags (org-get-tags nil t))
+  (let* ((tags (org-get-tags nil nil))
 	 (server (seq-some #'devops--resolve-server-for-tag tags))
          (params (if server
                      (cons (cons :dir server) params)
@@ -63,14 +78,15 @@
 
 (advice-add 'org-babel-execute-src-block :around #'devops--inject-dir-from-tag)
 
-(defun devops--heading-server-tag ()
-  "Return (TAG . SERVER) for the first matching server tag on current heading.
-Searches heading's tags against #+SERVER keywords."
-  (let ((tags (org-get-tags nil t)))
-    (seq-some (lambda (tag)
-                (when-let* ((server (devops--resolve-server-for-tag tag)))
-                  (cons tag server)))
-              tags)))
+(defun devops--heading-server-tags ()
+  "Return list of (TAG . SERVER) for all matching tags on current heading.
+Searches heading's tags against all #+SERVER keywords."
+  (let ((tags (org-get-tags nil nil)))
+    (delq nil
+          (mapcar (lambda (tag)
+                    (when-let* ((server (devops--resolve-server-for-tag tag)))
+                      (cons tag server)))
+                  tags))))
 
 (defun devops--rewrite-tangle-paths (tramp-prefix)
   "Rewrite :tangle header args in buffer to include TRAMP-PREFIX.
@@ -85,10 +101,11 @@ Modifies buffer text. Skips :tangle no and paths already containing a TRAMP pref
                    (not (tramp-tramp-file-p path)))
           (replace-match (concat ":tangle " tramp-prefix path)))))))
 
-(defun devops--tangle-heading (source-buf heading-pos server tmp-file)
-  "Tangle HEADING-POS from SOURCE-BUF to SERVER using TMP-FILE as scratch.
+(defun devops--tangle-heading (source-buf heading-pos server)
+  "Tangle subtree at HEADING-POS from SOURCE-BUF to SERVER.
 Returns number of files tangled, or nil."
-  (let ((tmp-buf (find-file-noselect tmp-file)))
+  (let* ((tmp-file (make-temp-file "devops-tangle-" nil ".org"))
+	 (tmp-buf  (find-file-noselect tmp-file)))
     (unwind-protect
         (with-current-buffer tmp-buf
           (let ((inhibit-read-only t))
@@ -102,7 +119,9 @@ Returns number of files tangled, or nil."
               (widen)
               (when files (length files)))))
       (with-current-buffer tmp-buf
-        (set-buffer-modified-p nil)))))
+        (set-buffer-modified-p nil)
+	(kill-buffer tmp-buf)
+	(delete-file tmp-file)))))
 
 (defun devops--tangle-spec (&optional arg)
   "Return a tangle plan for the current buffer.
@@ -114,24 +133,25 @@ Otherwise include only the current heading."
       (let (specs)
         (org-map-entries
          (lambda ()
-           (when-let* ((pair (devops--heading-server-tag)))
+           (dolist (pair (devops--heading-server-tags))
              (push (list :tag (car pair)
                          :server (cdr pair)
                          :heading-pos (point))
                    specs))))
         (nreverse specs))
-    (let ((pair (devops--heading-server-tag)))
-      (unless pair
+    (let ((pairs (devops--heading-server-tags)))
+      (unless pairs
         (user-error "No #+SERVER match for tags on current heading"))
-      (list (list :tag (car pair)
-                  :server (cdr pair)
-                  :heading-pos (save-excursion
-                                 (org-back-to-heading t)
-                                 (point)))))))
+      (let ((pos (save-excursion (org-back-to-heading t) (point))))
+        (mapcar (lambda (pair)
+                  (list :tag (car pair)
+                        :server (cdr pair)
+                        :heading-pos pos))
+                pairs)))))
 
 ;;;###autoload
 (defun devops-tangle (&optional arg)
-  "Tangle current heading's source blocks to their remote server.
+  "Tangle current heading's source blocks to remote server(s).
 Resolves the heading's server tag to a TRAMP path and rewrites
 :tangle header args before delegating to `org-babel-tangle'.
 
@@ -140,20 +160,17 @@ server tags."
   (interactive "P")
   (let ((source-buf (current-buffer))
         (spec (devops--tangle-spec arg))
-        (results nil)
-        (tmp-file (make-temp-file "devops-tangle-" nil ".org")))
+        (results nil))
     (unwind-protect
         (dolist (entry spec)
           (let* ((tag (plist-get entry :tag))
                  (server (plist-get entry :server))
                  (heading-pos (plist-get entry :heading-pos))
                  (n (devops--tangle-heading
-                     source-buf heading-pos server tmp-file)))
+                     source-buf heading-pos server)))
             (when n
-              (push (list tag server n) results))))
-      (when-let* ((buf (find-buffer-visiting tmp-file)))
-        (kill-buffer buf))
-      (delete-file tmp-file))
+              (push (list tag server n) results)))))
+
     ;; Report
     (if results
         (message "%s"
@@ -295,23 +312,17 @@ Filter by REGEXP if provided."
   "Open Ghostty at contextual directory.
 In a src block, if the : copies body to clipboard and exports :var env vars."
   (interactive)
-  (let* ((tags (org-get-tags nil t))
-	 (server (seq-some #'devops--resolve-server-for-tag tags))
+  (let* ((dir (devops--heading-server-dir))
          (env-vars (devops-src-block-env-vars))
 	 (lang (org-element-property :language (org-element-at-point))))
     (when (or (string= lang "shell") (string= lang "sh"))
       (kill-new (devops-src-block-body))
       (message "Source block copied to kill ring."))
-    (devops--open-ghostty-at-dir server env-vars)))
+    (devops--open-ghostty-at-dir dir env-vars)))
 
 (defun devops--new-timestamp ()
   "Creates a new timestamp by formatting the current time."
   (format-time-string "%Y%m%dT%H%M%S"))
-
-(defun devops-create-incident-dir (slug)
-  "Creates a new timestamped incident directory"
-  (interactive "sSlug: ")
-  (devops--create-notebook-dir slug :type "incidents"))
 
 (cl-defun devops--worktree-directory (branch &key (dir default-directory))
   "Returns a sibling directory with _branch appended."
