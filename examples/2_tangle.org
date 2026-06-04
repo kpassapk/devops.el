@@ -1,16 +1,14 @@
-#+TARGET: /ssh:example1.com: (example1)
-#+TITLE: Example 2: Tangle remote files
+#+TARGET: /ssh:example1.com: (server)
+#+TITLE: Example 2: Tangle files
 
 =devops.el= helps you create files in remote servers.
 
 Source blocks with a =:tangle= header arg will be written to
 the server resolved from the heading's tag.
 
-* Try it!
+* Try it!                                                          :server:
 
-** Upload my name                                                :example1:
-
-Use =devops-tangle= in this heading to upload =~/foo.txt= to the =app_server=.
+** Upload files                                                
 
 #+name: username
 #+begin_src elisp
@@ -32,8 +30,26 @@ Use =devops-tangle= in this heading to upload =~/foo.txt= to the =app_server=.
 <<emacs-version()>>
 #+end_src
 
+Use =devops-tangle= with the point in this heading to upload =~/foo.json= and =emacs.txt= to the server.
 When the command finishes, you should see this in the Messages buffer:
 
 : Tangled 2 file(s) to example1 (/ssh:example1.com:)
 
 The two files should have been uploaded to the server.
+
+** Visit files
+
+With the point on one of the source code blocks above, use =devops-visit-file= to open the file at
+the tangle target. If there was more than one target tag, you would get a prompt to select which
+server to diff against.
+
+** TODO File diff                                                    :server:
+
+Use =devops-tangle-diff= to get a diff between the current file and the one on the server.
+
+#+begin_src json :tangle ~/foo.json
+{
+  "name": "Homer Simpson"
+}
+#+end_src
+

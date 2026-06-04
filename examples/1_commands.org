@@ -2,14 +2,12 @@
 #+TARGET: /ssh:example2.com: (server2)
 #+TITLE: Running server commands
 
-=devops.el= helps you run commands on one or more named servers by declaring them at the the top of the file in this format.
+=devops.el= helps you run commands on one or more named targets by declaring them at the the top of the file.
 
 #+begin_example
 #+TARGET: /ssh:example1.com: (server1)
 #+TARGET: /ssh:example2.com: (server2)
 #+end_example
-
-There can be as many labeled =TARGET= blocks as we need.
 
 Normally, org-babel runs commands on servers whenever the =:dir= header argument
 is set to a remote location. To run =ls= on =example1.com=, we could write
@@ -53,10 +51,8 @@ ls
 
 ** List both :server1:server2:
 
+When you execute this, you will get a prompt to choose which server
+
 #+begin_src sh :results output
-  ls
+ls
 #+end_src
-
-* Caveats
-
-- You should be able to ssh into the server without a password
