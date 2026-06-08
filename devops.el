@@ -86,6 +86,23 @@ If there is more than one target, use completing-read, allowing the user to sele
 
 (advice-add 'org-babel-execute-src-block :around #'devops--inject-header-args-from-tags)
 
+(defun devops--specialize-noweb-blocks (tag)
+  "Rewrite #+name: FOO (TAG) blocks for server-specific noweb resolution.
+Blocks matching TAG get renamed to #+name: FOO.
+Blocks matching other tags get renamed to avoid resolution."
+  (save-excursion
+    (goto-char (point-min))
+    (while (re-search-forward
+            "^\\([ \t]*#\\+name:[ \t]*\\)\\([^ \t\n]+\\) +(\\([^)]+\\))"
+            nil t)
+      (let ((prefix (match-string 1))
+            (basename (match-string 2))
+            (block-tag (match-string 3)))
+        (replace-match
+         (if (string= block-tag tag)
+             (concat prefix basename)
+           (concat prefix "_devops-excluded-" basename "-" block-tag)))))))
+
 (defun devops--rewrite-tangle-paths (tramp-prefix)
   "Rewrite :tangle header args in buffer to include TRAMP-PREFIX.
 Modifies buffer text. Skips :tangle no and paths already containing a TRAMP prefix."
@@ -99,8 +116,9 @@ Modifies buffer text. Skips :tangle no and paths already containing a TRAMP pref
                    (not (tramp-tramp-file-p path)))
           (replace-match (concat ":tangle " tramp-prefix path)))))))
 
-(defun devops--tangle-heading (source-buf heading-pos target)
+(defun devops--tangle-heading (source-buf heading-pos tag target)
   "Tangle subtree at HEADING-POS from SOURCE-BUF to TARGET.
+TAG is the server tag used for per-server noweb resolution.
 Returns number of files tangled, or nil."
   (let* ((tmp-file (make-temp-file "devops-tangle-" nil ".org"))
 	 (tmp-buf  (find-file-noselect tmp-file)))
@@ -112,6 +130,7 @@ Returns number of files tangled, or nil."
             (goto-char heading-pos)
             (org-narrow-to-subtree)
             (let* ((files (progn
+                            (devops--specialize-noweb-blocks tag)
                             (devops--rewrite-tangle-paths target)
                             (org-babel-tangle))))
               (widen)
@@ -165,7 +184,7 @@ target tags."
                  (target (plist-get entry :target))
                  (heading-pos (plist-get entry :heading-pos))
                  (n (devops--tangle-heading
-                     source-buf heading-pos target)))
+                     source-buf heading-pos tag target)))
             (when n
               (push (list tag target n) results)))))
 

@@ -58,18 +58,26 @@ Use =devops-tangle-diff= to get a diff between the current file and the one on t
 }
 #+end_src
 
-** Per-server cotent                                        :server1:server2:
+** TODO Per-server cotent                                   :server1:server2:
+
+You can have different content per server.
+
+Use =devops-tangle= in this heading.
+
+This block tangles file =tier.txt= to =server1= and =server2=.
+- On =server1=, its content will be "Server Tier 3"
+= On =server2=, its content will be "Server Tier 2"
 
 #+name: tier (server1)
-#+begin_example
+#+begin_src text
 3
-#+end_example
+#+end_src
 
 #+name: tier (server2)
-#+begin_src tier
+#+begin_src text
 2
 #+end_src
 
-#+begin_src sh
-echo Server Tier <<tier>>
+#+begin_src txt :tangle ~/tier.txt :noweb yes
+Server Tier <<tier>>
 #+end_src
