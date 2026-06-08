@@ -193,7 +193,7 @@ target tags."
                   (concat target path)))
               spec))))
 
-(defun devops-tangle-visit-file ()
+(defun devops-visit-file ()
   (interactive)
   (let ((paths (devops--tangle-paths)))
     (cond
@@ -286,7 +286,13 @@ Filter by REGEXP if provided."
                             (cons (format "%s" name) value))))
                       params))))))
 
-(defun devops-src-block-body ()
+(defun devops--src-block-tangle-header () 
+  (let ((block-info (org-babel-get-src-block-info 'light)))
+    (when block-info
+      (let ((header-args (nth 2 block-info)))
+	(cdr (assoc :tangle header-args))))))
+
+(defun devops--src-block-body ()
   "Return the body of the current src block, or nil."
   (when (derived-mode-p 'org-mode)
     (when-let* ((info (org-babel-get-src-block-info 'light)))
@@ -295,39 +301,15 @@ Filter by REGEXP if provided."
 
 ;;;###autoload
 (defun devops-open-terminal-dwim ()
-  "Open Ghostty at contextual directory.
+  "Open terminal at contextual directory.
 In a src block, if the : copies body to clipboard and exports :var env vars."
   (interactive)
   (let* ((dir (devops--heading-target-dir))
          (env-vars (devops-src-block-env-vars))
 	 (lang (org-element-property :language (org-element-at-point))))
     (when (or (string= lang "shell") (string= lang "sh"))
-      (kill-new (devops-src-block-body))
+      (kill-new (devops--src-block-body))
       (message "Source block copied to kill ring."))
     (devops--open-terminal-at-dir dir env-vars)))
-
-(defun devops--new-timestamp ()
-  "Creates a new timestamp by formatting the current time."
-  (format-time-string "%Y%m%dT%H%M%S"))
-
-(cl-defun devops--worktree-directory (branch &key (dir default-directory))
-  "Returns a sibling directory with _branch appended."
-  (let* ((path (directory-file-name (file-name-directory dir)))
-	 (name (file-name-nondirectory path))
-	 (path (file-name-parent-directory path))
-	 (wt (expand-file-name (concat name "_" branch) path)))
-    wt))
-
-(defun devops--resolve-secrets-table (rows)
-  "Resolve auth-source passwords for ROWS against AUTH-HOST.
-Each row is (KEY AUTH-USER). Returns ((KEY PASSWORD) ...).
-Binds `default-directory' locally so auth-source (1password)
-always runs `op' on the local target, not over TRAMP."
-  (let ((default-directory "~"))
-    (mapcar (lambda (row)
-              (list (car row)
-                    (auth-source-pick-first-password
-                     :host (nth 1 row) :user (nth 2 row))))
-            rows)))
 
 (provide 'devops)

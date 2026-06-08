@@ -1,4 +1,5 @@
-#+TARGET: /ssh:example1.com: (server)
+#+TARGET: /ssh:example1.com: (server1)
+#+TARGET: /ssh:example2.com: (server2)
 #+TITLE: Example 2: Tangle files
 
 =devops.el= helps you create files in remote servers.
@@ -6,7 +7,7 @@
 Source blocks with a =:tangle= header arg will be written to
 the server resolved from the heading's tag.
 
-* Try it!                                                          :server:
+* Try it!                                                          :server1:
 
 ** Upload files                                                
 
@@ -37,13 +38,17 @@ When the command finishes, you should see this in the Messages buffer:
 
 The two files should have been uploaded to the server.
 
-** Visit files
+** Visit files                                                       :server1:
 
 With the point on one of the source code blocks above, use =devops-visit-file= to open the file at
 the tangle target. If there was more than one target tag, you would get a prompt to select which
 server to diff against.
 
-** TODO File diff                                                    :server:
+#+begin_src file
+echo hi  
+#+end_src
+
+** TODO File diff                                                    :server1:
 
 Use =devops-tangle-diff= to get a diff between the current file and the one on the server.
 
@@ -53,3 +58,18 @@ Use =devops-tangle-diff= to get a diff between the current file and the one on t
 }
 #+end_src
 
+** Per-server cotent                                        :server1:server2:
+
+#+name: tier (server1)
+#+begin_example
+3
+#+end_example
+
+#+name: tier (server2)
+#+begin_src tier
+2
+#+end_src
+
+#+begin_src sh
+echo Server Tier <<tier>>
+#+end_src
