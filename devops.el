@@ -59,7 +59,7 @@ If there is more than one target, use completing-read, allowing the user to sele
   (let ((matches (devops--heading-target-tags)))
     (cond
      ((null matches)
-      (user-error "No #+TARGET match"))
+      nil)
      ((= 1 (length matches))
       (cdr (car matches)))
      (t
@@ -76,7 +76,7 @@ If there is more than one target, use completing-read, allowing the user to sele
   (let ((dir (devops--heading-target-dir)))
     (org-entry-put nil "header-args" (format ":dir %s" dir))))
 
-(defun devops--inject-header-args-from-tags (orig-fn &optional arg info params)
+(defun devops--inject-header-args-from-tags (orig-fn &optional arg info params _babel-call)
   "Advise org-babel-execute-src-block to inject :dir"
   (let* ((dir (devops--heading-target-dir))
          (params (if dir
