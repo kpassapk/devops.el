@@ -10,7 +10,7 @@ By following some conventions, this package helps you to manage infrastructure a
   :vc (:url "https://github.com/kpassapk/devops-lob.el"))
 ```
 
-## Stock org-mode
+## Why?
 
 Org mode, built into emacs, provides support for literate programming via Org Babel.  Org mode can also "tangle" its source code blocks, pushing them out as individual files in the file system.  This is a pretty good base for devops workflows, especially if we use some little-known features of org mode.
 
@@ -34,7 +34,7 @@ Tangling also works remotely when the `:tangle` header points to a server.
 
 3. Noweb can execute source blocks
 
-This is not immediately obvious: Noweb, which allows you to splice in named blocks by referring to them in double angle brackets (`<<``>>`), can also execute source code blocks and paste in the result.
+This is not immediately obvious: Noweb, which allows you to splice in named blocks by referring to them in double angle brackets (`<< ... >>`), can also execute source code blocks and paste in the result.
 
 This is useful for handling secrets:
 
@@ -50,6 +50,8 @@ api-key: <<API-KEY()>>
 #+END_SRC
 
 ```
+
+(Note the parenteses in `API-KEY()`).
 
 ## Limitations
 
