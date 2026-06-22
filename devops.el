@@ -212,15 +212,19 @@ target tags."
                   (concat target path)))
               spec))))
 
-(defun devops-visit-file ()
-  (interactive)
+(defun devops-visit-file (&optional arg)
+  "Go to file at of source code block at point.
+With a prefix arg, "
+  (interactive "P")
   (let ((paths (devops--tangle-paths)))
     (cond
      ((= 1 (length paths))
       (find-file (car paths)))
      ((> (length paths) 1)
       (let ((chosen-file (completing-read "Visit: " paths nil t)))
-        (find-file chosen-file)))
+        (if arg
+	    (find-file-other-window chosen-file)
+	  (find-file chosen-file))))
      (t
       (message "No tangle paths found.")))))
 

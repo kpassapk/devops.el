@@ -1,19 +1,57 @@
-# devops.el: Org-based devops
-
-"everything is an org file"
-                - Socrates
+# devops.el: Infrastructure as an org file
 
 By following some conventions, this package helps you to manage infrastructure as a set of org files. Infrastructure here may be servers, containers, serverless functions, DNS... up to you.
 
-Org mode, built into emacs, provides support for literate programming via Org Babel. 
-Org mode can also "tangle" its source code blocks, pushing them out as individual files in the file system. 
-In both cases, the org mode notebook is the surce of truth, managing external effects.
+## Installation
 
-This is precisely the devops philosophy: keep a single, versioned artifact, which reflects the state of external infrastructure. And three little-known features make org-babel work particularly well:
+```
+(use-package devops
+  :ensure t
+  :vc (:url "https://github.com/kpassapk/devops-lob.el"))
+```
 
-- code blocks run remotely by setting a remote `:dir` property.
-- tangling works remotely when the `:tangle` header points to a server.
-- noweb can call functions. This gives you a way to fetch secrets such as an `<<API_KEY()>>`s.
+## Stock org-mode
+
+Org mode, built into emacs, provides support for literate programming via Org Babel.  Org mode can also "tangle" its source code blocks, pushing them out as individual files in the file system.  This is a pretty good base for devops workflows, especially if we use some little-known features of org mode.
+
+1. Remote commands in org-babel
+
+Emacs can run any command in a code block remotely, if it has a remote `:dir` property:
+
+```
+#+begin_src sh :dir /ssh:server-user@example.com:
+whoami
+#+end_src
+
+: server-user
+```
+
+See the [org-babel-examples](https://github.com/dfeich/org-babel-examples/blob/master/shell/shell-babel.org#41-dir) repo for more.
+
+2. Tangling remotely
+
+Tangling also works remotely when the `:tangle` header points to a server.
+
+3. Noweb can execute source blocks
+
+This is not immediately obvious: Noweb, which allows you to splice in named blocks by referring to them in double angle brackets (`<<``>>`), can also execute source code blocks and paste in the result.
+
+This is useful for handling secrets:
+
+```
+#+NAME: API-KEY
+#+BEGIN_SRC sh
+op item get "Some Item" --fields label=credential --reveal
+#+END_SRC
+
+#+BEGIN_SRC yaml :tangle /ssh:server-user@example.com:.config/file.yaml :noweb yes
+---
+api-key: <<API-KEY()>>
+#+END_SRC
+
+```
+
+## Limitations
 
 There are some shortcomings and annoyances, however:
 
@@ -30,9 +68,17 @@ There are some shortcomings and annoyances, however:
 
 This library provides functionality to better support devops-like workflows. It does this by applying some conventions on top of org mode.
 
-## Target Tags
+## Devops-flavored Org Mode
 
-An org file can define "targets". These appear in heading tags:
+This package introduces a few conventions on top of org mode to make common devops tasks easier to express and run. They are:
+
+- Named targets
+- DWIM commands
+- Auto-loading `tools.org`
+
+### Named targets
+
+An devops-flavored org file can define "targets". These appear in heading tags:
 
 ```
 #+TARGET: /ssh:example1.com: (server1)
@@ -54,32 +100,20 @@ Tangling obeys the same target tags. This will create `foo.txt` in `server1`:
 #+END_SRC
 ```
 
-## Terminal DWIM command
+### Terminal DWIM command
 
-This package provides a `devops-open-terminal-dwim` command, which opens the current source block in a terminal.  `var` references become environment variables, and the source block content is copied to the clipboard.
+This package provides a `devops-open-terminal-dwim` command, which opens the current source block in a terminal. 
 
-## Requirements
+Any `var` references become environment variables, and the source block content is copied to the clipboard.
 
-- magit
-
-## Installing
-
-```elisp
-(use-package devops
-  :ensure t
-  :vc (:url "https://github.com/unifica-ai/devops.el"))
-```
-
-## devops-lob
+### devops-lob
 
 Any project with a `tools.org` at its root can expose named org-babel blocks as reusable tools. `devops-lob` loads and tracks these per-project so they don't pollute other projects.
 
-### Setup
-
 ```elisp
-(use-package devops
+(use-package devops-lob
   :ensure t
-  :vc (:url "https://github.com/unifica-ai/devops.el")
+  :vc (:url "https://github.com/unifica-ai/devops-lob.el")
   :hook
   (after-init . (lambda () (devops-lob-auto-mode 1))))
 ```
