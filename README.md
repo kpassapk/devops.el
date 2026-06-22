@@ -72,15 +72,7 @@ This library provides functionality to better support devops-like workflows. It 
 
 ## Devops-flavored Org Mode
 
-This package introduces a few conventions on top of org mode to make common devops tasks easier to express and run. They are:
-
-- Named targets
-- DWIM commands
-- Auto-loading `tools.org`
-
-### Named targets
-
-An devops-flavored org file can define "targets". These appear in heading tags:
+This package works with "targets" defined at the top of the file, which also appear in heading tags:
 
 ```
 #+TARGET: /ssh:example1.com: (server1)
@@ -90,27 +82,84 @@ An devops-flavored org file can define "targets". These appear in heading tags:
 * Do something on server2               :server2:
 ```
 
-Source code blocks under a heading tag that matches a target (a "target tag") execute in on the server, instead of locally.
+Source code blocks under a heading tag that matches a target (a "target tag") execute in on the server, instead of locally:
+
+```
+#+TARGET: /ssh:example1.com: (server1)
+#+TARGET: /ssh:example2.com: (server2)
+
+* Do something on server1               :server1:
+
+#+BEGIN_SRC sh
+hostname
+#+END_SRC
+
+: example1.com
+
+* Do something on server2               :server2:
+
+#+BEGIN_SRC sh
+hostname
+#+END_SRC
+
+: example2.com
+```
+
+Note that the above source code blocks do not have a `:dir` property. It is set implicitly to the
+target server (`example1.com` / `example2.com`) based on the heading tag (`server1` / `server2`).
+
+You can use more than one tag, if a command has multiple targets.
+
+```
+* Do something on both server1 and server2             :server1:server2:
+
+#+BEGIN_SRC sh
+hostname
+#+END_SRC
+```
+
+At the moment, if you have more than one server tag, and you press `C-c C-c`, you will be prompted
+for the server using completing-read. In the future, it would be nice to run multiple commands in
+parallel, though I haven't identified yet how to best do this.
+
+### Tangling
 
 Tangling obeys the same target tags. This will create `foo.txt` in `server1`:
 
 ```
-* Do something on server1               :server1:
+* Upload a file to server1                              :server1:
 
 #+BEGIN_SRC txt :tangle "~/foo.txt"
-...
+... contents of foo.xt ...
 #+END_SRC
 ```
 
-### Terminal DWIM command
+You can tangle a file to multiple servers:
 
-This package provides a `devops-open-terminal-dwim` command, which opens the current source block in a terminal. 
+```
+* Upload a file to server1 and server2                  :server1:server2:
 
-Any `var` references become environment variables, and the source block content is copied to the clipboard.
+#+BEGIN_SRC txt :tangle "~/foo.txt"
+... contents of foo.xt ...
+#+END_SRC
+```
 
-### devops-lob
+## Long-running commands
 
-Any project with a `tools.org` at its root can expose named org-babel blocks as reusable tools. `devops-lob` loads and tracks these per-project so they don't pollute other projects.
+Long commands such as `apt-get update` can lock up emacs.
+
+This package provides a `devops-open-terminal-dwim` command, which opens the current source block in a terminal. (Only `ghostty` supported at the moment, but more terminals planned.)
+
+Any `var` references become environment variables loaded into the (usually remote) remote shell.
+
+The source block content is copied to the clipboard, so you can do `devops-open-terminal-dwim`, then 
+paste, and you will be running the command at the correct location.
+
+## devops-lob
+
+`devops.el` uses org's Library of Babel (LOB) to save commonly used server commands. 
+
+Any project with a `tools.org` at its root can expose named org-babel blocks as reusable tools. `devops-lob` loads and unloads these per-project.
 
 ```elisp
 (use-package devops-lob
