@@ -14,7 +14,7 @@ By following some conventions, this package helps you to manage infrastructure a
 
 Org mode, built into emacs, provides support for literate programming via Org Babel.  Org mode can also "tangle" its source code blocks, pushing them out as individual files in the file system.  This is a pretty good base for devops workflows, especially if we use some little-known features of org mode.
 
-1. Remote commands in org-babel
+### 1. Remote commands in org-babel
 
 Emacs can run any command in a code block remotely, if it has a remote `:dir` property:
 
@@ -28,11 +28,11 @@ whoami
 
 See the [org-babel-examples](https://github.com/dfeich/org-babel-examples/blob/master/shell/shell-babel.org#41-dir) repo for more.
 
-2. Tangling remotely
+### 2. Tangling remotely
 
 Tangling also works remotely when the `:tangle` header points to a server.
 
-3. Noweb can execute source blocks
+### 3. Noweb can execute source blocks
 
 This is not immediately obvious: Noweb, which allows you to splice in named blocks by referring to them in double angle brackets (`<< ... >>`), can also execute source code blocks and paste in the result.
 
