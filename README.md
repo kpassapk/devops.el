@@ -7,12 +7,12 @@ By following some conventions, this package helps you to manage infrastructure a
 ```
 (use-package devops
   :ensure t
-  :vc (:url "https://github.com/kpassapk/devops-lob.el"))
+  :vc (:url "https://github.com/kpassapk/devops.el"))
 ```
 
 ## Why?
 
-Org mode, built into emacs, provides support for literate programming via Org Babel.  Org mode can also "tangle" its source code blocks, pushing them out as individual files in the file system.  This is a pretty good base for devops workflows, especially if we use some little-known features of org mode.
+Org mode, built into emacs, provides support for literate programming via Org Babel.  Org mode can also "tangle" its source code blocks, pushing them out as individual files in the file system.  This is a pretty good base for [literate devops](https://howardism.org/Technical/Emacs/literate-devops.html), especially if we use some little-known features of org mode:
 
 ### 1. Remote commands in org-babel
 
@@ -34,7 +34,7 @@ Tangling also works remotely when the `:tangle` header points to a server.
 
 ### 3. Noweb can execute source blocks
 
-This is not immediately obvious: Noweb, which allows you to splice in named blocks by referring to them in double angle brackets (`<< ... >>`), can also execute source code blocks and paste in the result.
+This is not immediately obvious: Noweb, which allows you to splice in named blocks by referring to them in double angle brackets (`<< ... >>`), can also execute source code blocks and interpolate the result.
 
 This is useful for handling secrets:
 
@@ -124,7 +124,7 @@ parallel, though I haven't identified yet how to best do this.
 
 ### Tangling
 
-Tangling obeys the same target tags. This will create `foo.txt` in `server1`:
+Tangling obeys the same target tags. This will create `~/foo.txt` in `server1`:
 
 ```
 * Upload a file to server1                              :server1:
@@ -134,7 +134,8 @@ Tangling obeys the same target tags. This will create `foo.txt` in `server1`:
 #+END_SRC
 ```
 
-You can tangle a file to multiple servers:
+You can tangle a file to multiple servers. This will create `~/foo.txt` on both
+`server1` and `server2`:
 
 ```
 * Upload a file to server1 and server2                  :server1:server2:
@@ -146,13 +147,14 @@ You can tangle a file to multiple servers:
 
 ## Long-running commands
 
-Long commands such as `apt-get update` can lock up emacs.
+Long commands such as `apt-get update` can lock up emacs. There are several worakrounds, from 
+using sessions and `:async yes` (built in), to [ob-async](https://github.com/astahlman/ob-async), and probably others. YMMV.
 
-This package provides a `devops-open-terminal-dwim` command, which opens the current source block in a terminal. (Only `ghostty` supported at the moment, but more terminals planned.)
+[ob-screen]: https://howardism.org/Technical/Emacs/literate-devops.html#fnr.4
 
-Any `var` references become environment variables loaded into the (usually remote) remote shell.
+I like using a separate terminal to run most commands, instead of emacs.  This package provides a `devops-open-terminal-dwim` command, which opens the current source block in a terminal. (Only `ghostty` supported at the moment, but more terminals planned.)
 
-The source block content is copied to the clipboard, so you can do `devops-open-terminal-dwim`, then 
+Any `var` references become environment variables loaded into the (usually remote) remote shell. The source block content is copied to the clipboard, so you can do `devops-open-terminal-dwim`, then 
 paste, and you will be running the command at the correct location.
 
 ## devops-lob
@@ -164,7 +166,7 @@ Any project with a `tools.org` at its root can expose named org-babel blocks as 
 ```elisp
 (use-package devops-lob
   :ensure t
-  :vc (:url "https://github.com/unifica-ai/devops.el"
+  :vc (:url "https://github.com/kpasaspk/devops.el"
        :main-file "devops-lob.el")
   :hook
   (after-init . (lambda () (devops-lob-auto-mode 1))))
@@ -196,14 +198,14 @@ Call tools from any org buffer:
 #+call: health-check(host="app.example.com")
 ```
 
-### Commands
+### tools.org commands
 
-| Command | Description |
-|---------|-------------|
-| `devops-lob-load-project-tools` | Load `tools.org` from current project root |
-| `devops-lob-unload-project-tools` | Remove current project's tools from LOB |
+| Command                           | Description                                       |
+|-----------------------------------|---------------------------------------------------|
+| `devops-lob-load-project-tools`   | Load `tools.org` from current project root        |
+| `devops-lob-unload-project-tools` | Remove current project's tools from LOB           |
 | `devops-lob-reload-project-tools` | Unload then reload (pick up edits to `tools.org`) |
-| `devops-lob-unload-all` | Remove all devops-tracked LOB entries |
+| `devops-lob-unload-all`           | Remove all devops-tracked LOB entries             |
 
 Inspect loaded tools:
 
