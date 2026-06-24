@@ -114,7 +114,11 @@ Modifies buffer text. Skips :tangle no and paths already containing a TRAMP pref
       (let ((path (match-string 1)))
         (when (and (not (string= path "no"))
                    (not (tramp-tramp-file-p path)))
-          (replace-match (concat ":tangle " tramp-prefix path)))))))
+          (replace-match (concat ":tangle " tramp-prefix path))
+          ;; Step before the rewrite so the backward search keeps making
+          ;; progress.  Otherwise a local (non-TRAMP) prefix would leave the
+          ;; rewritten path matchable and we'd re-prefix it forever.
+          (goto-char (match-beginning 0)))))))
 
 (defun devops--tangle-heading (source-buf heading-pos tag target)
   "Tangle subtree at HEADING-POS from SOURCE-BUF to TARGET.
@@ -166,6 +170,31 @@ Otherwise include only the current heading."
                         :heading-pos pos))
                 pairs)))))
 
+(defun devops--tangle-spec-execute (source-buf spec)
+  "Tangle each entry of SPEC from SOURCE-BUF.
+SPEC is a list of plists as built by `devops--tangle-spec'.  Return a list
+of (TAG TARGET N) results.  Free of interaction and messaging, so it can be
+driven noninteractively (e.g. from a pod or a test)."
+  (let ((results nil))
+    (dolist (entry spec)
+      (let* ((tag (plist-get entry :tag))
+             (target (plist-get entry :target))
+             (heading-pos (plist-get entry :heading-pos))
+             (n (devops--tangle-heading source-buf heading-pos tag target)))
+        (when n
+          (push (list tag target n) results))))
+    (nreverse results)))
+
+(defun devops--tangle-report (results)
+  "Format RESULTS from `devops--tangle-spec-execute' as a status string."
+  (if results
+      (mapconcat
+       (lambda (r)
+         (format "Tangled %d file(s) to %s (%s)"
+                 (nth 2 r) (nth 0 r) (nth 1 r)))
+       results "; ")
+    "No files tangled"))
+
 ;;;###autoload
 (defun devops-tangle (&optional arg)
   "Tangle current heading's source blocks to remote target(s).
@@ -175,28 +204,29 @@ Resolves the heading's target tag to a TRAMP path and rewrites
 With prefix ARG, tangle all headings in the buffer that have
 target tags."
   (interactive "P")
-  (let ((source-buf (current-buffer))
-        (spec (devops--tangle-spec arg))
-        (results nil))
-    (unwind-protect
-        (dolist (entry spec)
-          (let* ((tag (plist-get entry :tag))
-                 (target (plist-get entry :target))
-                 (heading-pos (plist-get entry :heading-pos))
-                 (n (devops--tangle-heading
-                     source-buf heading-pos tag target)))
-            (when n
-              (push (list tag target n) results)))))
+  (message "%s"
+           (devops--tangle-report
+            (devops--tangle-spec-execute
+             (current-buffer) (devops--tangle-spec arg)))))
 
-    ;; Report
-    (if results
-        (message "%s"
-                 (mapconcat
-                  (lambda (r)
-                    (format "Tangled %d file(s) to %s (%s)"
-                            (nth 2 r) (nth 0 r) (nth 1 r)))
-                  (nreverse results) "; "))
-      (message "No files tangled"))))
+(defun devops-tangle-headline (source-buf headline)
+  "Tangle the subtree titled HEADLINE in SOURCE-BUF, noninteractively.
+Locate HEADLINE with `org-find-exact-headline-in-buffer', then tangle it
+exactly as `devops-tangle' would with point on that heading.  Return a list
+of (TAG TARGET N) results.  SOURCE-BUF must be an org-mode buffer."
+  (with-current-buffer source-buf
+    (save-excursion
+      (let ((pos (org-find-exact-headline-in-buffer headline nil t)))
+        (unless pos (error "No heading titled %S" headline))
+        (goto-char pos)
+        (devops--tangle-spec-execute source-buf (devops--tangle-spec nil))))))
+
+(defun devops-tangle-all (source-buf)
+  "Tangle every target-tagged heading in SOURCE-BUF, noninteractively.
+Return a list of (TAG TARGET N) results, like `devops-tangle' with a prefix
+argument.  SOURCE-BUF must be an org-mode buffer."
+  (with-current-buffer source-buf
+    (devops--tangle-spec-execute source-buf (devops--tangle-spec t))))
 
 (defun devops--tangle-paths ()
   "Return a list of file paths expanded with each target"
