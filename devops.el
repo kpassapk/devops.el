@@ -20,6 +20,12 @@
 ;; `devops.el' offers utilities for running commands on local and remote
 ;; machines using org mode.
 
+;;; Code:
+
+(require 'org)
+(require 'tramp)  ; tramp-tramp-file-p / tramp-dissect-file-name etc. are used
+                  ; below; autoloaded interactively but not under `emacs -Q'.
+
 (defcustom devops-terminal-program 'ghostty
   "Terminal program to use for externally opening target locations"
   :type '(choice (const ghostty)))
