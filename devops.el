@@ -103,18 +103,36 @@ Blocks matching other tags get renamed to avoid resolution."
              (concat prefix basename)
            (concat prefix "_devops-excluded-" basename "-" block-tag)))))))
 
+(defun devops--join-target (target path)
+  "Join TARGET prefix onto a relative :tangle PATH with one separator.
+TARGET is a #+TARGET value (a directory or TRAMP prefix); PATH is a
+relative :tangle filename.  A \"/\" is inserted between them unless TARGET
+already ends in \"/\" or \":\".  A trailing \":\" marks a TRAMP method/host
+prefix (e.g. \"/ssh:host:\") whose bare form already means the remote
+login directory, so no separator is added there.
+
+This keeps awkward targets honest: \".\" yields \"./PATH\" (not the hidden
+file \".PATH\") and \"/srv/app\" yields \"/srv/app/PATH\" (not
+\"/srv/appPATH\")."
+  (if (or (string-suffix-p "/" target)
+          (string-suffix-p ":" target))
+      (concat target path)
+    (concat target "/" path)))
+
 (defun devops--rewrite-tangle-paths (tramp-prefix)
   "Rewrite :tangle header args in buffer to include TRAMP-PREFIX.
-Modifies buffer text. Skips :tangle no and paths already containing a TRAMP prefix."
+Modifies buffer text.  Skips :tangle no, :tangle yes, and paths already
+containing a TRAMP prefix."
   (save-excursion
     (goto-char (point-max))
     (while (re-search-backward
             ":tangle +\\([^ \t\n]+\\)"
             nil t)
       (let ((path (match-string 1)))
-        (when (and (not (string= path "no"))
+        (when (and (not (member path '("no" "yes")))
                    (not (tramp-tramp-file-p path)))
-          (replace-match (concat ":tangle " tramp-prefix path))
+          (replace-match (concat ":tangle "
+                                 (devops--join-target tramp-prefix path)))
           ;; Step before the rewrite so the backward search keeps making
           ;; progress.  Otherwise a local (non-TRAMP) prefix would leave the
           ;; rewritten path matchable and we'd re-prefix it forever.
@@ -123,8 +141,18 @@ Modifies buffer text. Skips :tangle no and paths already containing a TRAMP pref
 (defun devops--tangle-heading (source-buf heading-pos tag target)
   "Tangle subtree at HEADING-POS from SOURCE-BUF to TARGET.
 TAG is the server tag used for per-server noweb resolution.
-Returns number of files tangled, or nil."
-  (let* ((tmp-file (make-temp-file "devops-tangle-" nil ".org"))
+Returns number of files tangled, or nil.
+
+A relative local TARGET (e.g. \".\" or \"../foo\") is expanded against
+SOURCE-BUF's directory before tangling.  Tangling runs in a temp buffer
+whose file lives in the system temp dir, so without this a relative
+target would silently resolve against the temp dir instead of the org
+file.  TRAMP targets are left untouched."
+  (let* ((target (if (tramp-tramp-file-p target)
+                     target
+                   (expand-file-name
+                    target (buffer-local-value 'default-directory source-buf))))
+         (tmp-file (make-temp-file "devops-tangle-" nil ".org"))
 	 (tmp-buf  (find-file-noselect tmp-file)))
     (unwind-protect
         (with-current-buffer tmp-buf
@@ -234,12 +262,12 @@ argument.  SOURCE-BUF must be an org-mode buffer."
          (params (nth 2 (org-babel-get-src-block-info)))
          (path (cdr (assq :tangle params))))
     (if (or (not path)
-            (string= path "no")
-            (tramp-tramp-file-p path)) 
+            (member path '("no" "yes"))
+            (tramp-tramp-file-p path))
         nil
       (mapcar (lambda (entry)
                 (let ((target (plist-get entry :target)))
-                  (concat target path)))
+                  (devops--join-target target path)))
               spec))))
 
 (defun devops-visit-file (&optional arg)

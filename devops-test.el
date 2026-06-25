@@ -104,6 +104,26 @@ The directory is removed afterwards."
     (devops-set-header-args-from-tags)
     (should (equal (org-entry-get nil "header-args") ":dir /srv/one/"))))
 
+;;; Target/path joining
+
+(ert-deftest devops--join-target-test ()
+  "Join a target prefix and a relative path with exactly one separator."
+  ;; Directory targets with and without a trailing slash.
+  (should (equal (devops--join-target "/srv/app/" "foo.txt") "/srv/app/foo.txt"))
+  (should (equal (devops--join-target "/srv/app" "foo.txt") "/srv/app/foo.txt"))
+  ;; Relative targets must not glue onto the filename ("." -> "./", not ".foo").
+  (should (equal (devops--join-target "." "foo.txt") "./foo.txt"))
+  (should (equal (devops--join-target ".." "foo.txt") "../foo.txt"))
+  (should (equal (devops--join-target "./" "foo.txt") "./foo.txt"))
+  (should (equal (devops--join-target "../" "foo.txt") "../foo.txt"))
+  ;; TRAMP host prefix: a trailing ":" means the remote login dir, no slash.
+  (should (equal (devops--join-target "/ssh:host:" "foo.txt") "/ssh:host:foo.txt"))
+  ;; TRAMP path with an explicit directory still gets a single separator.
+  (should (equal (devops--join-target "/ssh:host:/etc" "foo.txt")
+                 "/ssh:host:/etc/foo.txt"))
+  (should (equal (devops--join-target "/ssh:host:/etc/" "foo.txt")
+                 "/ssh:host:/etc/foo.txt")))
+
 ;;; Tangle-path rewriting
 
 (ert-deftest devops--rewrite-tangle-paths-test ()
@@ -142,6 +162,40 @@ The directory is removed afterwards."
     (devops--rewrite-tangle-paths "/ssh:host1:")
     (goto-char (point-min))
     (should-not (search-forward "/ssh:host1:/ssh:" nil t))))
+
+(ert-deftest devops--rewrite-tangle-paths-no-slash-target-test ()
+  "A target without a trailing slash gets a separator inserted."
+  (devops-test--with-org
+      (concat "* Heading\n\n"
+              "#+begin_src sh :tangle foo.txt\n"
+              "echo hi\n#+end_src\n")
+    (devops--rewrite-tangle-paths "/srv/app")
+    (goto-char (point-min))
+    (should (search-forward ":tangle /srv/app/foo.txt" nil t))))
+
+(ert-deftest devops--rewrite-tangle-paths-relative-target-test ()
+  "A \".\" target yields \"./foo.txt\", not the hidden file \".foo.txt\"."
+  (devops-test--with-org
+      (concat "* Heading\n\n"
+              "#+begin_src sh :tangle foo.txt\n"
+              "echo hi\n#+end_src\n")
+    (devops--rewrite-tangle-paths ".")
+    (goto-char (point-min))
+    (should (search-forward ":tangle ./foo.txt" nil t))
+    (goto-char (point-min))
+    (should-not (search-forward ":tangle .foo.txt" nil t))))
+
+(ert-deftest devops--rewrite-tangle-paths-skip-yes-test ()
+  "Don't rewrite :tangle yes (the default-filename flag, not a path)."
+  (devops-test--with-org
+      (concat "* Heading\n\n"
+              "#+begin_src sh :tangle yes\n"
+              "echo hi\n#+end_src\n")
+    (devops--rewrite-tangle-paths "/ssh:host1:")
+    (goto-char (point-min))
+    (should (search-forward ":tangle yes" nil t))
+    (goto-char (point-min))
+    (should-not (search-forward ":tangle /ssh:host1:" nil t))))
 
 ;;; Per-server noweb specialization
 
@@ -244,6 +298,34 @@ The directory is removed afterwards."
                      (format "Tangled 1 file(s) to local (%s)" target)))
       (should (file-exists-p (concat target "out.txt"))))))
 
+(ert-deftest devops-tangle-target-no-slash-test ()
+  "A #+TARGET without a trailing slash still writes into that directory."
+  (devops-test--with-local-target target
+    (devops-test--with-org
+        (format (concat "#+TARGET: %s (local)\n\n"
+                        "* Deploy\t\t:local:\n\n"
+                        "#+begin_src txt :tangle out.txt\nhi\n#+end_src\n")
+                ;; strip the trailing slash the helper added
+                (directory-file-name target))
+      (let ((results (devops-tangle-headline (current-buffer) "Deploy")))
+        (should (equal results
+                       (list (list "local" (directory-file-name target) 1))))
+        (should (file-exists-p (concat target "out.txt")))))))
+
+(ert-deftest devops-tangle-relative-target-test ()
+  "A relative #+TARGET resolves against the source buffer's directory.
+The actual tangling happens in a temp buffer; this guards that relative
+targets land next to the org file rather than in the system temp dir."
+  (devops-test--with-local-target target
+    (devops-test--with-org
+        (concat "#+TARGET: . (local)\n\n"
+                "* Deploy\t\t:local:\n\n"
+                "#+begin_src txt :tangle out.txt\nhi\n#+end_src\n")
+      (setq default-directory target)
+      (let ((results (devops-tangle-headline (current-buffer) "Deploy")))
+        (should (equal results (list (list "local" "." 1))))
+        (should (file-exists-p (concat target "out.txt")))))))
+
 (ert-deftest devops-tangle-no-target-tag-test ()
   "Error when the current heading has no matching target tag."
   (devops-test--with-org
@@ -260,6 +342,17 @@ The directory is removed afterwards."
   "Expand the current block's :tangle path against each target."
   (devops-test--with-org
       (concat "#+TARGET: /srv/one/ (t1)\n\n"
+              "* Deploy\t\t:t1:\n\n"
+              "#+begin_src sh :tangle foo.txt\n"
+              "echo hi\n#+end_src\n")
+    (goto-char (point-min))
+    (re-search-forward "begin_src")
+    (should (equal (devops--tangle-paths) '("/srv/one/foo.txt")))))
+
+(ert-deftest devops--tangle-paths-no-slash-target-test ()
+  "Visit-path expansion inserts a separator for a slash-less target."
+  (devops-test--with-org
+      (concat "#+TARGET: /srv/one (t1)\n\n"
               "* Deploy\t\t:t1:\n\n"
               "#+begin_src sh :tangle foo.txt\n"
               "echo hi\n#+end_src\n")
