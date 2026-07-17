@@ -269,6 +269,49 @@ The directory is removed afterwards."
             (insert-file-contents out)
             (should (search-forward "{\"name\": \"test\"}" nil t))))))))
 
+(ert-deftest devops-tangle-custom-id-test ()
+  "Tangle a heading selected by its CUSTOM_ID to a local target."
+  (devops-test--with-local-target target
+    (devops-test--with-org
+        (format (concat "#+TARGET: %s (local)\n\n"
+                        "* Deploy\t\t:local:\n"
+                        ":PROPERTIES:\n:CUSTOM_ID: deploy-id\n:END:\n\n"
+                        "#+begin_src json :tangle config.json\n"
+                        "{\"name\": \"test\"}\n#+end_src\n")
+                target)
+      (let ((results (devops-tangle-custom-id (current-buffer) "deploy-id")))
+        (should (equal results (list (list "local" target 1))))
+        (should (file-exists-p (concat target "config.json")))))))
+
+(ert-deftest devops-tangle-custom-id-trims-selector-test ()
+  "A CUSTOM_ID selector with surrounding whitespace still matches.
+Selectors passed straight from a `:results output' block carry a trailing
+newline; the selector must be trimmed before matching."
+  (devops-test--with-local-target target
+    (devops-test--with-org
+        (format (concat "#+TARGET: %s (local)\n\n"
+                        "* Deploy\t\t:local:\n"
+                        ":PROPERTIES:\n:CUSTOM_ID: deploy-id\n:END:\n\n"
+                        "#+begin_src json :tangle config.json\n"
+                        "{\"name\": \"test\"}\n#+end_src\n")
+                target)
+      (let ((results (devops-tangle-custom-id (current-buffer) "deploy-id\n")))
+        (should (equal results (list (list "local" target 1))))
+        (should (file-exists-p (concat target "config.json")))))))
+
+(ert-deftest devops-tangle-headline-trims-selector-test ()
+  "A headline selector with surrounding whitespace still matches."
+  (devops-test--with-local-target target
+    (devops-test--with-org
+        (format (concat "#+TARGET: %s (local)\n\n"
+                        "* Deploy\t\t:local:\n\n"
+                        "#+begin_src json :tangle config.json\n"
+                        "{\"name\": \"test\"}\n#+end_src\n")
+                target)
+      (let ((results (devops-tangle-headline (current-buffer) "  Deploy\n")))
+        (should (equal results (list (list "local" target 1))))
+        (should (file-exists-p (concat target "config.json")))))))
+
 (ert-deftest devops-tangle-all-test ()
   "Tangle every tagged heading to local targets."
   (devops-test--with-local-target target

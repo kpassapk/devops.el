@@ -247,10 +247,14 @@ target tags."
   "Tangle the subtree titled HEADLINE in SOURCE-BUF, noninteractively.
 Locate HEADLINE with `org-find-exact-headline-in-buffer', then tangle it
 exactly as `devops-tangle' would with point on that heading.  Return a list
-of (TAG TARGET N) results.  SOURCE-BUF must be an org-mode buffer."
+of (TAG TARGET N) results.  SOURCE-BUF must be an org-mode buffer.
+
+Surrounding whitespace in HEADLINE is ignored, so a selector taken straight
+from a `:results output' block (which carries a trailing newline) still
+matches."
   (with-current-buffer source-buf
     (save-excursion
-      (let ((pos (org-find-exact-headline-in-buffer headline nil t)))
+      (let ((pos (org-find-exact-headline-in-buffer (string-trim headline) nil t)))
         (unless pos (error "No heading titled %S" headline))
         (goto-char pos)
         (devops--tangle-spec-execute source-buf (devops--tangle-spec nil))))))
@@ -261,10 +265,14 @@ Locate it with `org-find-property', then tangle it exactly as `devops-tangle'
 would with point on that heading.  Unlike `devops-tangle-headline', the
 selector is stable across title edits and unambiguous when several headings
 share a title.  Return a list of (TAG TARGET N) results.  SOURCE-BUF must be
-an org-mode buffer."
+an org-mode buffer.
+
+Surrounding whitespace in CUSTOM-ID is ignored, so a selector taken straight
+from a `:results output' block (which carries a trailing newline) still
+matches."
   (with-current-buffer source-buf
     (save-excursion
-      (let ((pos (org-find-property "CUSTOM_ID" custom-id)))
+      (let ((pos (org-find-property "CUSTOM_ID" (string-trim custom-id))))
         (unless pos (error "No heading with CUSTOM_ID %S" custom-id))
         (goto-char pos)
         (devops--tangle-spec-execute source-buf (devops--tangle-spec nil))))))
