@@ -376,7 +376,7 @@ Filter by REGEXP if provided."
     ('ghostty
      (let ((ghostty (devops--ghostty-command dir env-vars)))
        (message (format "Calling process:\n%s" (string-join ghostty " ")))
-       (apply #'call-process (car ghostty) nil nil nil (cdr ghostty))))))
+       (apply #'start-process "devops-terminal" nil ghostty)))))
 
 (defun devops-src-block-env-vars ()
   "Return alist of evaluated :var params from current src block."
