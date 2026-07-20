@@ -1,9 +1,12 @@
 ;; devops-test.el --- Tests for devops.el  -*- lexical-binding: t; -*-
 
 (require 'ert)
+(require 'cl-lib)
 (require 'org)
+(require 'ob-shell)
 (require 'tramp)
 (require 'devops)
+(require 'devops-lob)
 
 ;;; Helpers
 
@@ -402,5 +405,278 @@ targets land next to the org file rather than in the system temp dir."
     (goto-char (point-min))
     (re-search-forward "begin_src")
     (should (equal (devops--tangle-paths) '("/srv/one/foo.txt")))))
+
+;;; Multi-tag target selection
+
+(ert-deftest devops--heading-target-dir-multi-test ()
+  "With several matching tags, the completing-read choice wins."
+  (devops-test--with-org
+      (concat "#+TARGET: /srv/one/ (t1)\n"
+              "#+TARGET: /srv/two/ (t2)\n\n"
+              "* Deploy\t\t:t1:t2:\n")
+    (org-back-to-heading)
+    (cl-letf (((symbol-function 'completing-read)
+               (lambda (_prompt collection &rest _) (cadr collection))))
+      (should (equal (devops--heading-target-dir) "/srv/two/")))))
+
+;;; Src block execution (README: blocks run at the heading's target)
+
+(ert-deftest devops-execute-src-block-injects-dir-test ()
+  "Executing a block under a target-tagged heading runs in the target dir."
+  (devops-test--with-local-target target
+    (devops-test--with-org
+        (format (concat "#+TARGET: %s (local)\n\n"
+                        "* Run\t\t:local:\n\n"
+                        "#+begin_src sh\npwd\n#+end_src\n")
+                target)
+      (goto-char (point-min))
+      (re-search-forward "begin_src")
+      (let* ((org-confirm-babel-evaluate nil)
+             (result (org-babel-execute-src-block)))
+        (should (equal (file-name-as-directory (file-truename (org-trim result)))
+                       (file-name-as-directory (file-truename target))))))))
+
+;;; Multi-target tangling (README: same file to several servers)
+
+(ert-deftest devops-tangle-multi-target-test ()
+  "One heading tagged for two targets tangles the file to both."
+  (devops-test--with-local-target t1
+    (devops-test--with-local-target t2
+      (devops-test--with-org
+          (format (concat "#+TARGET: %s (s1)\n"
+                          "#+TARGET: %s (s2)\n\n"
+                          "* Deploy\t\t:s1:s2:\n\n"
+                          "#+begin_src txt :tangle foo.txt\nhello\n#+end_src\n")
+                  t1 t2)
+        (let ((results (devops-tangle-headline (current-buffer) "Deploy")))
+          (should (equal results (list (list "s1" t1 1)
+                                       (list "s2" t2 1))))
+          (should (file-exists-p (concat t1 "foo.txt")))
+          (should (file-exists-p (concat t2 "foo.txt"))))))))
+
+;;; Noweb (README: secrets via <<NAME()>>, per-server blocks)
+
+(ert-deftest devops-tangle-noweb-executes-block-test ()
+  "Noweb <<NAME()>> executes the named block during tangling."
+  (devops-test--with-local-target target
+    (devops-test--with-org
+        (format (concat "#+TARGET: %s (local)\n\n"
+                        "* Deploy\t\t:local:\n\n"
+                        "#+name: SECRET\n"
+                        "#+begin_src emacs-lisp\n\"s3cret\"\n#+end_src\n\n"
+                        "#+begin_src yaml :tangle config.yaml :noweb yes\n"
+                        "api-key: <<SECRET()>>\n#+end_src\n")
+                target)
+      (let ((org-confirm-babel-evaluate nil))
+        (devops-tangle-headline (current-buffer) "Deploy"))
+      (with-temp-buffer
+        (insert-file-contents (concat target "config.yaml"))
+        (should (search-forward "api-key: s3cret" nil t))))))
+
+(ert-deftest devops-tangle-per-server-noweb-test ()
+  "Server-tagged #+name blocks resolve per target during multi-target tangle."
+  (devops-test--with-local-target t1
+    (devops-test--with-local-target t2
+      (devops-test--with-org
+          (format (concat "#+TARGET: %s (server1)\n"
+                          "#+TARGET: %s (server2)\n\n"
+                          "* Deploy\t\t:server1:server2:\n\n"
+                          "#+name: tier (server1)\n"
+                          "#+begin_src text\none\n#+end_src\n\n"
+                          "#+name: tier (server2)\n"
+                          "#+begin_src text\ntwo\n#+end_src\n\n"
+                          "#+begin_src conf :tangle app.conf :noweb yes\n"
+                          "tier=<<tier>>\n#+end_src\n")
+                  t1 t2)
+        (devops-tangle-headline (current-buffer) "Deploy")
+        (with-temp-buffer
+          (insert-file-contents (concat t1 "app.conf"))
+          (should (search-forward "tier=one" nil t)))
+        (with-temp-buffer
+          (insert-file-contents (concat t2 "app.conf"))
+          (should (search-forward "tier=two" nil t)))))))
+
+;;; Src block introspection
+
+(ert-deftest devops-src-block-env-vars-test ()
+  "Collect :var params as (NAME . VALUE) pairs."
+  (devops-test--with-org
+      (concat "* H\n\n"
+              "#+begin_src sh :var name=\"val\" :var n=3\n"
+              "echo $name\n#+end_src\n")
+    (goto-char (point-min))
+    (re-search-forward "begin_src")
+    (let ((vars (devops-src-block-env-vars)))
+      (should (= 2 (length vars)))
+      (should (equal (assoc "name" vars) '("name" . "val")))
+      (should (equal (assoc "n" vars) '("n" . 3))))))
+
+(ert-deftest devops--src-block-body-test ()
+  "Return the trimmed body of the block at point."
+  (devops-test--with-org
+      "* H\n\n#+begin_src sh\n  echo hi\n#+end_src\n"
+    (goto-char (point-min))
+    (re-search-forward "begin_src")
+    (should (equal (devops--src-block-body) "echo hi"))))
+
+(ert-deftest devops--src-block-tangle-header-test ()
+  "Return the :tangle header of the block at point."
+  (devops-test--with-org
+      "* H\n\n#+begin_src sh :tangle foo.txt\necho hi\n#+end_src\n"
+    (goto-char (point-min))
+    (re-search-forward "begin_src")
+    (should (equal (devops--src-block-tangle-header) "foo.txt"))))
+
+;;; Terminal command construction (README: devops-open-terminal-dwim)
+
+(ert-deftest devops--ghostty-command-local-test ()
+  "Local dir opens ghostty with a working directory."
+  (should (equal (devops--ghostty-command "/tmp/work/")
+                 '("ghostty" "--working-directory=/tmp/work/"))))
+
+(ert-deftest devops--ghostty-command-local-env-test ()
+  "Local dir with env vars exports them before the shell."
+  (should (equal (devops--ghostty-command "/tmp/work/" '(("FOO" . "bar")))
+                 '("ghostty" "--working-directory=/tmp/work/"
+                   "-e" "bash" "-c" "export FOO=bar && exec $SHELL"))))
+
+(ert-deftest devops--ghostty-command-remote-test ()
+  "Remote TRAMP dir becomes an ssh -t invocation with cd."
+  (should (equal (devops--ghostty-command "/ssh:deploy@example.com:/srv/app")
+                 '("ghostty" "-e" "ssh" "-t" "deploy@example.com"
+                   "cd /srv/app && $SHELL"))))
+
+(ert-deftest devops--ghostty-command-remote-env-test ()
+  "Remote dir with env vars exports them in the remote command."
+  (should (equal (devops--ghostty-command "/ssh:deploy@example.com:/srv/app"
+                                          '(("FOO" . "bar")))
+                 '("ghostty" "-e" "ssh" "-t" "deploy@example.com"
+                   "cd /srv/app && export FOO=bar && $SHELL"))))
+
+(ert-deftest devops--ghostty-command-remote-no-user-test ()
+  "Remote dir without a user part targets the bare host."
+  (should (equal (devops--ghostty-command "/ssh:example.com:/srv/app")
+                 '("ghostty" "-e" "ssh" "-t" "example.com"
+                   "cd /srv/app && $SHELL"))))
+
+;;; devops-lob (README: per-project tools.org)
+
+(defvar devops-test--tools-org
+  (concat "#+title: Tools\n\n"
+          "#+name: deploy\n"
+          "#+begin_src sh :var env=\"staging\"\n"
+          "./deploy.sh $env\n#+end_src\n\n"
+          "#+name: health-check\n"
+          "#+begin_src sh :var host=\"localhost\"\n"
+          "curl -sf http://$host/health\n#+end_src\n")
+  "The README's tools.org example.")
+
+(defmacro devops-test--with-project (root-var tools-content &rest body)
+  "Run BODY with ROOT-VAR bound to a fresh project root (contains .git).
+When TOOLS-CONTENT is non-nil, write it to tools.org at the root.
+`default-directory' is the root; LOB globals and the devops registry are
+isolated so tests never touch real state.  Everything is removed after."
+  (declare (indent 2))
+  `(let ((,root-var (file-name-as-directory (make-temp-file "devops-proj-" t)))
+         (org-babel-library-of-babel nil)
+         (devops--lob-project-registry nil)
+         (project-list-file (make-temp-file "devops-projects-")))
+     (unwind-protect
+         (progn
+           (make-directory (expand-file-name ".git" ,root-var))
+           (when ,tools-content
+             (with-temp-file (expand-file-name "tools.org" ,root-var)
+               (insert ,tools-content)))
+           (let ((default-directory ,root-var))
+             ,@body))
+       (delete-file project-list-file)
+       (delete-directory ,root-var t))))
+
+(ert-deftest devops--lob-names-in-file-test ()
+  "Collect named src block symbols from a file."
+  (devops-test--with-project root devops-test--tools-org
+    (should (equal (devops--lob-names-in-file
+                    (expand-file-name "tools.org" root))
+                   '(deploy health-check)))))
+
+(ert-deftest devops-lob-load-project-tools-test ()
+  "Load tools.org into the LOB; loading twice doesn't duplicate."
+  (devops-test--with-project root devops-test--tools-org
+    (devops-lob-load-project-tools)
+    (should (assq 'deploy org-babel-library-of-babel))
+    (should (assq 'health-check org-babel-library-of-babel))
+    (should (= 1 (length devops--lob-project-registry)))
+    (devops-lob-load-project-tools)
+    (should (= 1 (length devops--lob-project-registry)))))
+
+(ert-deftest devops-lob-load-no-tools-file-test ()
+  "A project without tools.org loads nothing."
+  (devops-test--with-project root nil
+    (devops-lob-load-project-tools)
+    (should (null org-babel-library-of-babel))
+    (should (null devops--lob-project-registry))))
+
+(ert-deftest devops-lob-unload-project-tools-test ()
+  "Unloading removes the project's LOB entries and registry row."
+  (devops-test--with-project root devops-test--tools-org
+    (devops-lob-load-project-tools)
+    (devops-lob-unload-project-tools)
+    (should (null org-babel-library-of-babel))
+    (should (null devops--lob-project-registry))))
+
+(ert-deftest devops-lob-reload-project-tools-test ()
+  "Reload picks up edits to tools.org and drops removed entries."
+  (devops-test--with-project root devops-test--tools-org
+    (devops-lob-load-project-tools)
+    (with-temp-file (expand-file-name "tools.org" root)
+      (insert "#+name: rollback\n#+begin_src sh\n./rollback.sh\n#+end_src\n"))
+    (devops-lob-reload-project-tools)
+    (should (assq 'rollback org-babel-library-of-babel))
+    (should-not (assq 'deploy org-babel-library-of-babel))))
+
+(ert-deftest devops-lob-unload-all-test ()
+  "Unload-all clears every tracked entry."
+  (devops-test--with-project root devops-test--tools-org
+    (devops-lob-load-project-tools)
+    (devops-lob-unload-all)
+    (should (null org-babel-library-of-babel))
+    (should (null devops--lob-project-registry))))
+
+(ert-deftest devops-org-tool-blocks-test ()
+  "Summarize and filter loaded LOB entries (README inspect example)."
+  (devops-test--with-project root devops-test--tools-org
+    (devops-lob-load-project-tools)
+    (should (= 2 (length (devops-org-tool-blocks))))
+    (let ((filtered (devops-org-tool-blocks "deploy")))
+      (should (= 1 (length filtered)))
+      (let ((entry (car filtered)))
+        (should (eq (nth 0 entry) 'deploy))
+        (should (equal (nth 1 entry) "sh"))
+        (should (eq (caar (nth 2 entry)) :var))))))
+
+(ert-deftest devops-lob-auto-mode-hook-test ()
+  "Enabling the mode installs the find-file hook; disabling removes it."
+  (unwind-protect
+      (progn
+        (devops-lob-auto-mode 1)
+        (should (memq #'devops--lob-maybe-load-on-find-file find-file-hook))
+        (devops-lob-auto-mode -1)
+        (should-not (memq #'devops--lob-maybe-load-on-find-file find-file-hook)))
+    (devops-lob-auto-mode -1)))
+
+(ert-deftest devops-lob-auto-load-on-find-file-test ()
+  "With auto mode on, opening a file in a project loads its tools.org."
+  (devops-test--with-project root devops-test--tools-org
+    (let ((file (expand-file-name "notes.txt" root))
+          buf)
+      (with-temp-file file (insert "hi\n"))
+      (unwind-protect
+          (progn
+            (devops-lob-auto-mode 1)
+            (setq buf (find-file-noselect file))
+            (should (assq 'deploy org-babel-library-of-babel))
+            (should (= 1 (length devops--lob-project-registry))))
+        (devops-lob-auto-mode -1)
+        (when buf (kill-buffer buf))))))
 
 (provide 'devops-test)

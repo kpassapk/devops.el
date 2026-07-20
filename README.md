@@ -61,7 +61,7 @@ There are some shortcomings and annoyances, however:
 
 2. When describing an actual production environment, it's easy to end up with duplicate `/ssh:someuser@someserver:somedirectory/...` `:dir` properties all over the file. This is extremely difficult to scan.
 
-3. Each source block can only  have a single `:dir`. This makes the following typical use cases difficult:
+3. Each source block can only have a single `:dir`. This makes the following typical use cases difficult:
 
   - Uploading the same content on multiple servers
   - Running the same command on multiple servers

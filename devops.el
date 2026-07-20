@@ -23,12 +23,19 @@
 ;;; Code:
 
 (require 'org)
+(require 'org-element)  ; org-element-property / org-element-at-point
 (require 'tramp)  ; tramp-tramp-file-p / tramp-dissect-file-name etc. are used
                   ; below; autoloaded interactively but not under `emacs -Q'.
 
+(defgroup devops nil
+  "Manage infrastructure as org files."
+  :group 'tools
+  :prefix "devops-")
+
 (defcustom devops-terminal-program 'ghostty
   "Terminal program to use for externally opening target locations"
-  :type '(choice (const ghostty)))
+  :type '(choice (const ghostty))
+  :group 'devops)
 
 (defun devops--parse-target-keyword (value)
   "Parse a #+TARGET value like \"target1 (source)\" into (TAG . TARGET)."
@@ -60,7 +67,8 @@ Searches heading's tags against all #+TARGET keywords."
 
 (defun devops--heading-target-dir ()
   "Return :dir from the current heading's tags and #+TARGET mappings.
-If there is more than one target, use completing-read, allowing the user to select one."
+If there is more than one target, use completing-read, allowing the
+user to select one."
   (interactive)
   (let ((matches (devops--heading-target-tags)))
     (cond
@@ -313,12 +321,6 @@ With a prefix arg, "
 	  (find-file chosen-file))))
      (t
       (message "No tangle paths found.")))))
-
-(defun devops-exec-in-notebook (block-name)
-  "Execute BLOCK-NAME in the source deployment org file."
-  (with-current-buffer (find-file-noselect devops-notebook)
-    (org-babel-goto-named-src-block block-name)
-    (org-babel-execute-src-block)))
 
 ;;;###autoload
 (defalias 'devops-ingest-tool-blocks 'devops-lob-load-project-tools

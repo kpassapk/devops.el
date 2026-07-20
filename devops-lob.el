@@ -1,4 +1,4 @@
-;; devops-lob.el -- Per-project tools.org Library-of-Babel management
+;; devops-lob.el -- Per-project tools.org Library-of-Babel management  -*- lexical-binding: t; -*-
 
 (require 'ob-lob)
 (require 'project)
@@ -10,13 +10,20 @@
   "Return symbols of named src blocks in FILE without modifying LOB."
   (let (names)
     (org-babel-map-src-blocks file
-      (when-let ((name (nth 4 (org-babel-get-src-block-info 'no-eval))))
+      (when-let* ((name (nth 4 (org-babel-get-src-block-info 'no-eval))))
         (push (intern name) names)))
     (nreverse names)))
 
+(defvar devops--lob-loading nil
+  "Non-nil while a tools.org load is in progress.
+Reading tools.org visits it, which fires `find-file-hook' before the
+project is registered; without this guard `devops-lob-auto-mode' would
+re-enter the load and register the project twice.")
+
 (defun devops--lob-do-load (root tools-file)
   "Ingest TOOLS-FILE and register entry names under ROOT."
-  (let ((names (devops--lob-names-in-file tools-file)))
+  (let* ((devops--lob-loading t)
+         (names (devops--lob-names-in-file tools-file)))
     (org-babel-lob-ingest tools-file)
     (push (cons root names) devops--lob-project-registry)
     (message "devops: loaded %d LOB entries from %s" (length names) tools-file)))
@@ -73,7 +80,8 @@
 (defun devops--lob-maybe-load-on-find-file ()
   "Auto-load tools.org for current project if not yet loaded.
 Skips TRAMP remote paths."
-  (when (not (file-remote-p default-directory))
+  (when (and (not devops--lob-loading)
+             (not (file-remote-p default-directory)))
     (when-let* ((proj (project-current nil))
                 (root (project-root proj))
                 (file (expand-file-name "tools.org" root)))
@@ -86,6 +94,7 @@ Skips TRAMP remote paths."
   "Automatically load tools.org LOB entries when opening files in a project."
   :global t
   :lighter " dLOB"
+  :group 'tools
   (if devops-lob-auto-mode
       (add-hook 'find-file-hook #'devops--lob-maybe-load-on-find-file)
     (remove-hook 'find-file-hook #'devops--lob-maybe-load-on-find-file)))
