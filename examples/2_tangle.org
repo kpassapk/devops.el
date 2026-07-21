@@ -48,17 +48,7 @@ server to diff against.
 echo hi  
 #+end_src
 
-** TODO File diff                                                    :server1:
-
-Use =devops-tangle-diff= to get a diff between the current file and the one on the server.
-
-#+begin_src json :tangle ~/foo.json
-{
-  "name": "Homer Simpson"
-}
-#+end_src
-
-** TODO Per-server cotent                                   :server1:server2:
+** Per-server cotent                                   :server1:server2:
 
 You can have different content per server.
 
@@ -81,3 +71,14 @@ This block tangles file =tier.txt= to =server1= and =server2=.
 #+begin_src txt :tangle ~/tier.txt :noweb yes
 Server Tier <<tier>>
 #+end_src
+
+** Drift check                                                      :server1:
+
+Use =devops-drift= to get a diff between the current file and the one on the server.
+
+#+begin_src json :tangle ~/foo.json
+{
+  "name": "Homer Simpson"
+}
+#+end_src
+

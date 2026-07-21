@@ -7,6 +7,7 @@
 (require 'tramp)
 (require 'devops)
 (require 'devops-lob)
+(require 'devops-drift)
 
 ;;; Helpers
 
@@ -558,6 +559,198 @@ targets land next to the org file rather than in the system temp dir."
   (should (equal (devops--ghostty-command "/ssh:example.com:/srv/app")
                  '("ghostty" "-e" "ssh" "-t" "example.com"
                    "cd /srv/app && $SHELL"))))
+
+;;; Drift detection (devops-drift.el)
+
+(defmacro devops-test--with-drift-check (target org-fmt &rest body)
+  "Run a whole-buffer drift check against a fresh local TARGET.
+ORG-FMT is a format string receiving TARGET.  BODY runs with `entries'
+bound to the drift entries and `root' to the temp tangle root (removed
+afterwards), in an org buffer visiting the formatted text."
+  (declare (indent 2))
+  `(devops-test--with-local-target ,target
+     (devops-test--with-org (format ,org-fmt ,target)
+       (let* ((result (devops--drift-check (current-buffer) t))
+              (root (car result))
+              (entries (cdr result)))
+         (unwind-protect
+             (progn ,@body)
+           (delete-directory root t))))))
+
+(ert-deftest devops--drift-localize-path-test ()
+  "Map :tangle paths to collision-free relative temp paths."
+  (should (equal (devops--drift-localize-path "~/foo.txt") "home/foo.txt"))
+  (should (equal (devops--drift-localize-path "~admin/foo.txt")
+                 "home/admin/foo.txt"))
+  (should (equal (devops--drift-localize-path "/etc/app.conf") "etc/app.conf"))
+  (should (equal (devops--drift-localize-path "conf/app.conf") "conf/app.conf"))
+  ;; TRAMP paths reduce to their remote-local part first.
+  (should (equal (devops--drift-localize-path "/ssh:host:~/x.txt")
+                 "home/x.txt"))
+  (should (equal (devops--drift-localize-path "/ssh:host:/etc/x.conf")
+                 "etc/x.conf")))
+
+(ert-deftest devops--drift-rewrite-tangle-paths-test ()
+  "Rewrite :tangle to temp paths and record (PATH LOCAL REMOTE)."
+  (devops-test--with-org
+      (concat "* Heading\n\n"
+              "#+begin_src sh :tangle ~/foo.txt\n"
+              "echo hi\n#+end_src\n\n"
+              "#+begin_src sh :tangle no\n"
+              "echo skip\n#+end_src\n\n"
+              "#+begin_src sh :tangle /ssh:other:/etc/x.conf\n"
+              "key=val\n#+end_src\n")
+    (let ((mapping (devops--drift-rewrite-tangle-paths "/ssh:host1:" "/tmp/root")))
+      (should (= 2 (length mapping)))
+      ;; Buffer order; :tangle no untouched.
+      (should (equal (car mapping)
+                     '("~/foo.txt" "/tmp/root/home/foo.txt"
+                       "/ssh:host1:~/foo.txt")))
+      ;; An already-TRAMP path keeps itself as remote but tangles locally.
+      (should (equal (cadr mapping)
+                     '("/ssh:other:/etc/x.conf" "/tmp/root/etc/x.conf"
+                       "/ssh:other:/etc/x.conf")))
+      (goto-char (point-min))
+      (should (search-forward ":tangle /tmp/root/home/foo.txt" nil t))
+      (goto-char (point-min))
+      (should (search-forward ":tangle no" nil t))
+      (goto-char (point-min))
+      (should-not (search-forward ":tangle /ssh:other:" nil t)))))
+
+(ert-deftest devops-drift-check-in-sync-test ()
+  "A target that matches its tangled output reports `same'."
+  (devops-test--with-local-target target
+    (devops-test--with-org
+        (format (concat "#+TARGET: %s (local)\n\n"
+                        "* Deploy\t\t:local:\n\n"
+                        "#+begin_src txt :tangle foo.txt\nhello\n#+end_src\n")
+                target)
+      (devops-tangle-headline (current-buffer) "Deploy")
+      (let* ((result (devops--drift-check (current-buffer) t))
+             (entries (cdr result)))
+        (unwind-protect
+            (progn
+              (should (= 1 (length entries)))
+              (let ((entry (car entries)))
+                (should (eq (plist-get entry :status) 'same))
+                (should (equal (plist-get entry :remote)
+                               (concat target "foo.txt")))
+                (should (equal (plist-get entry :path) "foo.txt"))))
+          (delete-directory (car result) t))))))
+
+(ert-deftest devops-drift-check-drift-test ()
+  "A target file that was changed out-of-band reports `drift'."
+  (devops-test--with-drift-check target
+      (concat "#+TARGET: %s (local)\n\n"
+              "* Deploy\t\t:local:\n\n"
+              "#+begin_src txt :tangle foo.txt\nhello\n#+end_src\n")
+    (ignore entries root)
+    (with-temp-file (concat target "foo.txt") (insert "changed on server\n"))
+    ;; Re-run: previous check tangled but target now differs.
+    (let ((again (devops--drift-check (current-buffer) t)))
+      (unwind-protect
+          (should (eq (plist-get (car (cdr again)) :status) 'drift))
+        (delete-directory (car again) t)))))
+
+(ert-deftest devops-drift-check-missing-test ()
+  "A target file that does not exist reports `missing'."
+  (devops-test--with-drift-check target
+      (concat "#+TARGET: %s (local)\n\n"
+              "* Deploy\t\t:local:\n\n"
+              "#+begin_src txt :tangle foo.txt\nhello\n#+end_src\n")
+    (ignore root)
+    (should (= 1 (length entries)))
+    (should (eq (plist-get (car entries) :status) 'missing))))
+
+(ert-deftest devops-drift-check-per-server-noweb-test ()
+  "Per-server noweb content lands in per-tag temp dirs; both stay in sync."
+  (devops-test--with-local-target t1
+    (devops-test--with-local-target t2
+      (devops-test--with-org
+          (format (concat "#+TARGET: %s (server1)\n"
+                          "#+TARGET: %s (server2)\n\n"
+                          "* Deploy\t\t:server1:server2:\n\n"
+                          "#+name: tier (server1)\n"
+                          "#+begin_src text\none\n#+end_src\n\n"
+                          "#+name: tier (server2)\n"
+                          "#+begin_src text\ntwo\n#+end_src\n\n"
+                          "#+begin_src conf :tangle app.conf :noweb yes\n"
+                          "tier=<<tier>>\n#+end_src\n")
+                  t1 t2)
+        (devops-tangle-headline (current-buffer) "Deploy")
+        (let* ((result (devops--drift-check (current-buffer) t))
+               (entries (cdr result)))
+          (unwind-protect
+              (progn
+                (should (= 2 (length entries)))
+                (dolist (entry entries)
+                  (should (eq (plist-get entry :status) 'same)))
+                ;; Same :tangle path, distinct per-tag local files.
+                (should-not (equal (plist-get (nth 0 entries) :local)
+                                   (plist-get (nth 1 entries) :local))))
+            (delete-directory (car result) t)))))))
+
+(ert-deftest devops-drift-check-current-heading-test ()
+  "Without ALL, only the heading at point is checked."
+  (devops-test--with-local-target target
+    (devops-test--with-org
+        (format (concat "#+TARGET: %s (local)\n\n"
+                        "* One\t\t:local:\n\n"
+                        "#+begin_src txt :tangle a.txt\nAAA\n#+end_src\n\n"
+                        "* Two\t\t:local:\n\n"
+                        "#+begin_src txt :tangle b.txt\nBBB\n#+end_src\n")
+                target)
+      (goto-char (point-min))
+      (re-search-forward "^\\* One")
+      (let ((result (devops--drift-check (current-buffer))))
+        (unwind-protect
+            (progn
+              (should (= 1 (length (cdr result))))
+              (should (equal (plist-get (car (cdr result)) :path) "a.txt")))
+          (delete-directory (car result) t))))))
+
+(ert-deftest devops-drift-report-test ()
+  "The report buffer renders statuses; RET jumps to the source block."
+  (devops-test--with-local-target target
+    (devops-test--with-org
+        (format (concat "#+TARGET: %s (local)\n\n"
+                        "* Deploy\t\t:local:\n\n"
+                        "#+begin_src txt :tangle foo.txt\nhello\n#+end_src\n")
+                target)
+      (let ((source (current-buffer)))
+        (org-back-to-heading)
+        (devops-drift)
+        (let ((report (get-buffer "*Drift Report*")))
+          (unwind-protect
+              (with-current-buffer report
+                (should (derived-mode-p 'devops-drift-report-mode))
+                (goto-char (point-min))
+                (should (search-forward "MISSING" nil t))
+                (should (search-forward (concat target "foo.txt") nil t))
+                ;; Temp tangle output exists while the report lives.
+                (should (file-exists-p
+                         (expand-file-name "local/foo.txt" devops-drift--root)))
+                (goto-char (point-min))
+                (devops-drift-report-visit)
+                (should (eq (current-buffer) source))
+                (should (looking-at "#\\+begin_src txt :tangle foo.txt")))
+            (when (buffer-live-p report) (kill-buffer report))))))))
+
+(ert-deftest devops-drift-report-cleanup-test ()
+  "Killing the report buffer removes its temp tangle directory."
+  (devops-test--with-local-target target
+    (devops-test--with-org
+        (format (concat "#+TARGET: %s (local)\n\n"
+                        "* Deploy\t\t:local:\n\n"
+                        "#+begin_src txt :tangle foo.txt\nhello\n#+end_src\n")
+                target)
+      (org-back-to-heading)
+      (devops-drift)
+      (let* ((report (get-buffer "*Drift Report*"))
+             (root (buffer-local-value 'devops-drift--root report)))
+        (should (file-directory-p root))
+        (kill-buffer report)
+        (should-not (file-directory-p root))))))
 
 ;;; devops-lob (README: per-project tools.org)
 

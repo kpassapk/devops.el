@@ -2,7 +2,7 @@ EMACS ?= emacs
 # Watchdog: batch ERT can hang on stdin/loops. Kill after TIMEOUT seconds.
 TIMEOUT ?= 120
 
-EL := devops.el devops-lob.el
+EL := devops.el devops-lob.el devops-drift.el
 TEST := devops-test.el
 
 BATCH := $(EMACS) --batch -L .
