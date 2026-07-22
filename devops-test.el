@@ -752,6 +752,40 @@ afterwards), in an org buffer visiting the formatted text."
         (kill-buffer report)
         (should-not (file-directory-p root))))))
 
+;;; State-check set comparison (devops-drift.el)
+
+(ert-deftest devops-drift-set-match-test ()
+  "Matching line sets report ok, ignoring order, blanks and whitespace."
+  (should (equal (devops-drift-set "b.service\na.service\n"
+                                   "  a.service  \n\nb.service")
+                 "ok (2 lines)")))
+
+(ert-deftest devops-drift-set-drift-test ()
+  "Missing and extra lines are each reported."
+  (should (equal (devops-drift-set "a.service\nc.service"
+                                   "a.service\nb.service")
+                 "DRIFT\nmissing: b.service\nextra: c.service")))
+
+(ert-deftest devops-drift-set-table-input-test ()
+  "Org table :var values (nested lists) normalize like strings."
+  (should (equal (devops-drift-set '(("a.service") ("b.service"))
+                                   "a.service\nb.service")
+                 "ok (2 lines)")))
+
+(ert-deftest devops-drift-set-org-block-test ()
+  "An elisp check block compares a named block against a named example."
+  (devops-test--with-org
+      (concat "#+name: actual\n"
+              "#+begin_src emacs-lisp\n\"a.service\\nb.service\\n\"\n#+end_src\n\n"
+              "#+name: expected\n"
+              "#+begin_example\na.service\nb.service\n#+end_example\n\n"
+              "#+begin_src emacs-lisp :var a=actual() e=expected\n"
+              "(devops-drift-set a e)\n#+end_src\n")
+    (goto-char (point-max))
+    (re-search-backward ":var a=actual")
+    (let ((org-confirm-babel-evaluate nil))
+      (should (equal (org-babel-execute-src-block) "ok (2 lines)")))))
+
 ;;; devops-lob (README: per-project tools.org)
 
 (defvar devops-test--tools-org

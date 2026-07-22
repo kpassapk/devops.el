@@ -294,4 +294,41 @@ the buffer."
       (tabulated-list-print))
     (pop-to-buffer buf)))
 
+;;; State checks
+
+(defun devops-drift--set-lines (value)
+  "Normalize VALUE to a list of trimmed, non-empty lines.
+VALUE is a string (split on newlines) or a possibly nested list, the
+two shapes org-babel passes for :var references to blocks and tables."
+  (cond
+   ((stringp value)
+    (seq-remove #'string-empty-p
+                (mapcar #'string-trim (split-string value "\n"))))
+   ((listp value) (mapcan #'devops-drift--set-lines value))
+   (t (list (string-trim (format "%s" value))))))
+
+;;;###autoload
+(defun devops-drift-set (actual expected)
+  "Compare ACTUAL and EXPECTED as unordered sets of lines.
+Each argument is a string or a list, as org-babel passes :var values;
+lines are trimmed and blanks dropped.  Return \"ok (N lines)\" when the
+sets match, otherwise a DRIFT report listing expected lines missing
+from ACTUAL and extra lines not in EXPECTED.  Meant for state-check
+blocks that compare live command output against a declared expectation:
+
+  #+begin_src elisp :var actual=live-cmd() expected=expected-block
+  (devops-drift-set actual expected)
+  #+end_src"
+  (let* ((actual (devops-drift--set-lines actual))
+         (expected (devops-drift--set-lines expected))
+         (missing (seq-difference expected actual))
+         (extra (seq-difference actual expected)))
+    (if (not (or missing extra))
+        (format "ok (%d lines)" (length expected))
+      (string-join
+       (cons "DRIFT"
+             (nconc (mapcar (lambda (l) (concat "missing: " l)) missing)
+                    (mapcar (lambda (l) (concat "extra: " l)) extra)))
+       "\n"))))
+
 (provide 'devops-drift)
