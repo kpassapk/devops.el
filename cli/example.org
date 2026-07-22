@@ -1,0 +1,39 @@
+#+TITLE: orgrun test
+
+* Greetings
+
+#+name: hello
+#+begin_src sh
+echo hello world
+#+end_src
+
+An unnamed block:
+
+#+begin_src sh
+# a comment first
+echo unnamed one
+#+end_src
+
+* Math
+
+#+name: add
+#+begin_src emacs-lisp
+(+ 40 2)
+#+end_src
+
+Duplicate first command, unnamed twice:
+
+#+begin_src sh
+echo dup
+#+end_src
+
+#+begin_src sh
+echo dup
+#+end_src
+
+* Failing
+
+#+name: boom
+#+begin_src sh
+exit 3
+#+end_src

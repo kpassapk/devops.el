@@ -1,0 +1,220 @@
+#!/usr/bin/env bb
+;; orgrun - a minimal runme.dev-style task runner for org-mode files.
+;;
+;; All org parsing and execution happens inside the kpassapk/emacs pod
+;; (org element API + org-babel); this script only formats pod output
+;; and dispatches subcommands.
+
+(require '[babashka.cli :as cli]
+         '[babashka.pods :as pods]
+         '[cheshire.core :as json]
+         '[clojure.string :as str])
+
+;; Loaded lazily so `orgrun help` doesn't pay Emacs startup.
+;; ORGRUN_POD can point at a pod binary; a repo checkout's binary serves its
+;; resources/*.el live, so unreleased pod fixes (e.g. babel exit-code
+;; signaling) apply without cutting a release. Falls back to the registry.
+(def ^:private pod
+  (delay
+    (let [local (or (System/getenv "ORGRUN_POD")
+                    (str (System/getProperty "user.home")
+                         "/src/github.com/kpassapk/pod-kpassapk-emacs"
+                         "/target/release/pod-kpassapk-emacs"))]
+      (if (.canExecute (java.io.File. local))
+        (pods/load-pod [local])
+        (pods/load-pod 'kpassapk/emacs "0.3.1")))
+    {:src-blocks (requiring-resolve 'pod.kpassapk.emacs.org/src-blocks)
+     :headlines  (requiring-resolve 'pod.kpassapk.emacs.org/headlines)
+     :execute    (requiring-resolve 'pod.kpassapk.emacs.org/execute)}))
+
+(defn- die [msg]
+  (binding [*out* *err*] (println msg))
+  (System/exit 1))
+
+(defn- status [msg]
+  (binding [*out* *err*] (println msg)))
+
+;; runme derives a display name for unnamed blocks from the first command:
+;; text before `=`, max 32 chars, first two words, lowercased, [a-z0-9-].
+(defn- auto-name [line]
+  (let [eq (str/index-of line "=")]
+    (if (and eq (pos? eq))
+      (recur (subs line 0 eq))
+      (let [s (subs line 0 (min 32 (count line)))
+            s (->> (str/split s #"\s+") (remove str/blank?) (take 2) (str/join " "))
+            s (-> (str/lower-case s)
+                  (str/replace #"[^a-z0-9 ]" "")
+                  str/trim
+                  (str/replace #"\s+" "-"))]
+        (if (str/blank? s) "unnamed" s)))))
+
+(defn- first-command [body]
+  (let [lines (str/split-lines body)]
+    (or (->> lines
+             (map str/trim)
+             (remove str/blank?)
+             (remove #(str/starts-with? % "#"))
+             first)
+        (str/trim (or (first lines) "")))))
+
+(defn- load-blocks [file]
+  (let [{:keys [src-blocks headlines]} @pod
+        bs (try (src-blocks file)
+                (catch Exception e (die (ex-message e))))
+        hs (try (headlines file)
+                (catch Exception e (die (ex-message e))))
+        heading-for (fn [begin]
+                      (->> hs (take-while #(<= (:begin %) begin)) last :title))]
+    (loop [bs bs, counts {}, out []]
+      (if-let [b (first bs)]
+        (let [fc (first-command (:body b))
+              base (or (:name b) (auto-name fc))
+              seen (get counts base 0)
+              run-name (if (zero? seen) base (str base "-" (inc seen)))]
+          (recur (rest bs)
+                 (assoc counts base (inc seen))
+                 (conj out (assoc b
+                                  :run-name run-name
+                                  :named? (some? (:name b))
+                                  :first-command fc
+                                  :heading (heading-for (:begin b))))))
+        out))))
+
+;; Like runme: exact match among named blocks first, then fall back to
+;; auto-named (unnamed) blocks.
+(defn- resolve-block [blocks nm]
+  (or (some #(when (and (:named? %) (= nm (:run-name %))) %) blocks)
+      (some #(when (= nm (:run-name %)) %) blocks)))
+
+(defn- run-block [file b]
+  (let [{:keys [execute]} @pod
+        nm (:run-name b)]
+    (status (str "► Running task " nm "..."))
+    (try
+      (let [res (execute file (if (:name b) {:name (:name b)} {:index (:index b)}))]
+        (when (some? res)
+          (println (if (string? res) res (pr-str res))))
+        (status (str "► ✓ Task " nm " exited with code 0"))
+        true)
+      (catch Exception e
+        (let [msg (ex-message e)
+              [_ code] (re-find #"exited with code (\d+)" (or msg ""))]
+          (status (if code
+                    (str "► ✗ Task " nm " exited with code " code)
+                    (str "► ✗ Task " nm " failed: " msg))))
+        false))))
+
+(defn- print-table [headers rows]
+  (let [cols (count headers)
+        widths (mapv (fn [i]
+                       (apply max (count (nth headers i))
+                              (map #(count (str (nth % i ""))) rows)))
+                     (range cols))
+        fmt-row (fn [row]
+                  (str/trimr
+                   (str/join "  " (map-indexed
+                                   (fn [i cell]
+                                     (format (str "%-" (nth widths i) "s") (str (or cell ""))))
+                                   row))))]
+    (println (fmt-row headers))
+    (doseq [r rows] (println (fmt-row r)))))
+
+(defn- cmd-list [{:keys [opts]}]
+  (let [file (:filename opts)
+        bs (load-blocks file)
+        visible (if (:allow-unnamed opts) bs (filterv :named? bs))]
+    (when (empty? visible)
+      (die (if (seq bs)
+             "no named code blocks, consider adding flag --allow-unnamed"
+             (str "no code blocks found in " file))))
+    (if (:json opts)
+      (println (json/generate-string
+                (map (fn [b]
+                       {:name (:run-name b)
+                        :file file
+                        :first_command (:first-command b)
+                        :description (:heading b)
+                        :named (:named? b)})
+                     visible)))
+      (print-table ["NAME" "FILE" "FIRST COMMAND" "DESCRIPTION" "NAMED"]
+                   (map (fn [b]
+                          [(:run-name b) file (:first-command b) (:heading b)
+                           (if (:named? b) "Yes" "No")])
+                        visible)))))
+
+(defn- cmd-run [{:keys [opts args]}]
+  (let [file (:filename opts)
+        bs (load-blocks file)
+        targets (cond
+                  (:all opts) bs
+
+                  (some? (:index opts))
+                  (let [i (:index opts)]
+                    (when (or (neg? i) (>= i (count bs)))
+                      (die (str "command index " i " out of range")))
+                    [(nth bs i)])
+
+                  (seq args)
+                  (mapv (fn [nm]
+                          (or (resolve-block bs nm)
+                              (die (str "unable to find any script named \"" nm "\""))))
+                        args)
+
+                  :else (die "provide a task name, --index N, or --all"))
+        ok (reduce (fn [acc b] (and (run-block file b) acc)) true targets)]
+    (System/exit (if ok 0 1))))
+
+(defn- cmd-print [{:keys [opts args]}]
+  (when (not= 1 (count args))
+    (die "print requires exactly one task name"))
+  (let [file (:filename opts)
+        nm (first args)
+        b (or (resolve-block (load-blocks file) nm)
+              (die (str "unable to find any script named \"" nm "\"")))]
+    (println (->> (str/split-lines (:body b))
+                  (map #(str/replace % #"^\s*\$ " ""))
+                  (str/join "\n")))))
+
+(defn- cmd-help [_]
+  (println "orgrun - run code blocks from org-mode files (runme.dev style)
+
+Usage:
+  orgrun list  [--filename FILE] [--allow-unnamed] [--json]
+  orgrun run   <name>... | --index N | --all  [--filename FILE]
+  orgrun print <name>  [--filename FILE]
+
+Options:
+  --filename, -f FILE   org file to use (default: README.org)
+  --allow-unnamed       include blocks without a #+name: in list
+  --json                list output as JSON
+  --index, -i N         run the Nth block (0-based)
+  --all, -a             run every block in the file
+
+Blocks are named with #+name:. Unnamed blocks get a name derived from
+their first command (e.g. `echo hello` -> echo-hello) and can be run by
+that name; duplicates get -2, -3 suffixes."))
+
+(def ^:private spec
+  {:filename      {:alias :f}
+   :allow-unnamed {:coerce :boolean}
+   :json          {:coerce :boolean}
+   :index         {:coerce :long :alias :i}
+   :all           {:coerce :boolean :alias :a}})
+
+;; cli/dispatch stops parsing options at the first positional arg
+;; (`run hello -f x` leaves `-f x` in :args), so re-parse the remainder
+;; and apply defaults last.
+(defn- reparse [{:keys [opts args]}]
+  (let [{o :opts a :args} (cli/parse-args (vec args) {:spec spec})]
+    {:opts (merge {:filename "README.org"} opts o)
+     :args a}))
+
+(def ^:private table
+  [{:cmds ["list"]  :fn (comp cmd-list reparse)  :spec spec}
+   {:cmds ["ls"]    :fn (comp cmd-list reparse)  :spec spec}
+   {:cmds ["run"]   :fn (comp cmd-run reparse)   :spec spec}
+   {:cmds ["print"] :fn (comp cmd-print reparse) :spec spec}
+   {:cmds ["help"]  :fn cmd-help}
+   {:cmds []        :fn cmd-help}])
+
+(cli/dispatch table *command-line-args*)
