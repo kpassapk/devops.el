@@ -632,7 +632,7 @@ afterwards), in an org buffer visiting the formatted text."
             (progn
               (should (= 1 (length entries)))
               (let ((entry (car entries)))
-                (should (eq (plist-get entry :status) 'same))
+                (should (eq (plist-get entry :status) :same))
                 (should (equal (plist-get entry :remote)
                                (concat target "foo.txt")))
                 (should (equal (plist-get entry :path) "foo.txt"))))
@@ -649,7 +649,7 @@ afterwards), in an org buffer visiting the formatted text."
     ;; Re-run: previous check tangled but target now differs.
     (let ((again (devops--drift-check (current-buffer) t)))
       (unwind-protect
-          (should (eq (plist-get (car (cdr again)) :status) 'drift))
+          (should (eq (plist-get (car (cdr again)) :status) :drift))
         (delete-directory (car again) t)))))
 
 (ert-deftest devops-drift-check-missing-test ()
@@ -660,7 +660,7 @@ afterwards), in an org buffer visiting the formatted text."
               "#+begin_src txt :tangle foo.txt\nhello\n#+end_src\n")
     (ignore root)
     (should (= 1 (length entries)))
-    (should (eq (plist-get (car entries) :status) 'missing))))
+    (should (eq (plist-get (car entries) :status) :missing))))
 
 (ert-deftest devops-drift-check-per-server-noweb-test ()
   "Per-server noweb content lands in per-tag temp dirs; both stay in sync."
@@ -684,7 +684,7 @@ afterwards), in an org buffer visiting the formatted text."
               (progn
                 (should (= 2 (length entries)))
                 (dolist (entry entries)
-                  (should (eq (plist-get entry :status) 'same)))
+                  (should (eq (plist-get entry :status) :same)))
                 ;; Same :tangle path, distinct per-tag local files.
                 (should-not (equal (plist-get (nth 0 entries) :local)
                                    (plist-get (nth 1 entries) :local))))
@@ -708,6 +708,132 @@ afterwards), in an org buffer visiting the formatted text."
               (should (= 1 (length (cdr result))))
               (should (equal (plist-get (car (cdr result)) :path) "a.txt")))
           (delete-directory (car result) t))))))
+
+;;; Drift detection, noninteractive (devops-drift.el)
+
+(defvar devops-test--drift-org
+  (concat "#+TARGET: %s (local)\n\n"
+          "* One\t\t:local:\n"
+          ":PROPERTIES:\n:CUSTOM_ID: one\n:END:\n\n"
+          "#+begin_src txt :tangle a.txt\nAAA\n#+end_src\n\n"
+          "* Two\t\t:local:\n\n"
+          "#+begin_src txt :tangle b.txt\nBBB\n#+end_src\n")
+  "Two target-tagged headings, one file each.  Takes a target directory.")
+
+(ert-deftest devops-drift-all-data-test ()
+  "Entries are alists keyed by keywords, one per tangled file."
+  (devops-test--with-local-target target
+    (devops-test--with-org (format devops-test--drift-org target)
+      (devops-tangle-all (current-buffer))
+      (let ((entries (devops-drift-all (current-buffer))))
+        (should (= 2 (length entries)))
+        ;; An alist, not a plist: this is what cljbang reads as a map.
+        (should (consp (car (car entries))))
+        (let ((entry (car entries)))
+          (should (eq (alist-get :status entry) :same))
+          (should (equal (alist-get :tag entry) "local"))
+          (should (equal (alist-get :path entry) "a.txt"))
+          (should (equal (alist-get :remote entry) (concat target "a.txt")))
+          (should (equal (alist-get :target entry) target))
+          (should-not (alist-get :diff entry)))))))
+
+(ert-deftest devops-drift-all-leaves-no-temp-tree-test ()
+  "The noninteractive check owns its temp tangle tree and removes it."
+  (devops-test--with-local-target target
+    (devops-test--with-org (format devops-test--drift-org target)
+      (let ((before (directory-files temporary-file-directory nil "\\`devops-drift-")))
+        (devops-drift-all (current-buffer))
+        (should (equal before
+                       (directory-files temporary-file-directory
+                                        nil "\\`devops-drift-")))))))
+
+(ert-deftest devops-drift-headline-test ()
+  "A headline selector checks that subtree only."
+  (devops-test--with-local-target target
+    (devops-test--with-org (format devops-test--drift-org target)
+      (let ((entries (devops-drift-headline (current-buffer) "Two\n")))
+        (should (= 1 (length entries)))
+        (should (equal (alist-get :path (car entries)) "b.txt"))
+        (should (eq (alist-get :status (car entries)) :missing))))))
+
+(ert-deftest devops-drift-custom-id-test ()
+  "A CUSTOM_ID selector checks that subtree only."
+  (devops-test--with-local-target target
+    (devops-test--with-org (format devops-test--drift-org target)
+      (let ((entries (devops-drift-custom-id (current-buffer) " one ")))
+        (should (= 1 (length entries)))
+        (should (equal (alist-get :path (car entries)) "a.txt"))))))
+
+(ert-deftest devops-drift-selector-not-found-test ()
+  "An unknown selector is an error, not an empty result."
+  (devops-test--with-local-target target
+    (devops-test--with-org (format devops-test--drift-org target)
+      (should-error (devops-drift-headline (current-buffer) "Three"))
+      (should-error (devops-drift-custom-id (current-buffer) "three")))))
+
+(ert-deftest devops-drift-file-source-test ()
+  "SOURCE may be a file name; a non-org file is refused."
+  (devops-test--with-local-target target
+    (let ((org (make-temp-file "devops-drift-src-" nil ".org"))
+          (txt (make-temp-file "devops-drift-src-" nil ".txt")))
+      (unwind-protect
+          (progn
+            (with-temp-file org (insert (format devops-test--drift-org target)))
+            (let ((entries (devops-drift-all org)))
+              (should (= 2 (length entries)))
+              (should (eq (alist-get :status (car entries)) :missing)))
+            (should-error (devops-drift-all txt)))
+        (dolist (file (list org txt))
+          (let ((buf (get-file-buffer file)))
+            (when buf (kill-buffer buf)))
+          (delete-file file))))))
+
+(ert-deftest devops-drift-diff-test ()
+  "A drifting file carries a unified diff labelled by remote and :tangle path."
+  (devops-test--with-local-target target
+    (devops-test--with-org (format devops-test--drift-org target)
+      (devops-tangle-all (current-buffer))
+      (with-temp-file (concat target "a.txt") (insert "changed on server\n"))
+      (let* ((entries (devops-drift-all (current-buffer)))
+             (entry (car entries))
+             (diff (alist-get :diff entry)))
+        (should (eq (alist-get :status entry) :drift))
+        (should (string-match-p (concat "^--- " (regexp-quote (concat target "a.txt")))
+                                diff))
+        (should (string-match-p "^\\+\\+\\+ a\\.txt (local)" diff))
+        (should (string-match-p "^-changed on server$" diff))
+        (should (string-match-p "^\\+AAA$" diff))))))
+
+(ert-deftest devops-drift-ok-p-test ()
+  "Everything in sync is ok; a single drift, or no entries at all, is not."
+  (should (devops-drift-ok-p '(((:status . :same)) ((:status . :same)))))
+  (should-not (devops-drift-ok-p '(((:status . :same)) ((:status . :drift)))))
+  (should-not (devops-drift-ok-p nil)))
+
+(ert-deftest devops-drift-summary-test ()
+  "The summary lists a line per entry, then the diffs."
+  (let ((text (devops-drift-summary
+               '(((:status . :same) (:tag . "s1") (:path . "a.txt")
+                  (:remote . "/ssh:h:a.txt") (:detail) (:diff))
+                 ((:status . :drift) (:tag . "s1") (:path . "b.txt")
+                  (:remote . "/ssh:h:b.txt") (:detail) (:diff . "@@ diff @@"))
+                 ((:status . :error) (:tag . "s2") (:path . "c.txt")
+                  (:remote . "/ssh:h2:c.txt") (:detail . "no route")
+                  (:diff))))))
+    (should (string-match-p "^ok +s1 +/ssh:h:a\\.txt$" text))
+    (should (string-match-p "^DRIFT +s1 +/ssh:h:b\\.txt$" text))
+    (should (string-match-p "^ERROR +s2 +/ssh:h2:c\\.txt (no route)$" text))
+    (should (string-suffix-p "\n\n@@ diff @@" text))))
+
+(ert-deftest devops-drift-table-test ()
+  "The table has a header, an hline, and a row per entry."
+  (let ((table (devops-drift-table
+                '(((:status . :missing) (:tag . "s1") (:path . "a.txt")
+                   (:remote . "/ssh:h:a.txt") (:detail) (:diff))))))
+    (should (equal (nth 0 table) '("Status" "Tag" "Path" "Remote")))
+    (should (eq (nth 1 table) 'hline))
+    (should (equal (nth 2 table)
+                   '("MISSING" "s1" "a.txt" "/ssh:h:a.txt")))))
 
 (ert-deftest devops-drift-report-test ()
   "The report buffer renders statuses; RET jumps to the source block."
