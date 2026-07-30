@@ -1,0 +1,210 @@
+#+TITLE: Decision 2: Async execution in per-target sessions
+#+DATE: 2026-07-30
+#+LINK: ob-shell https://orgmode.org/worg/org-contrib/babel/languages/ob-doc-shell.html
+#+LINK: async-header https://orgmode.org/manual/Environment-of-a-Code-Block.html
+
+* Context
+
+The first limitation listed in the README is that long-running remote commands lock
+up emacs:
+
+#+begin_quote
+Long-running commands (like =apt-get update=) can lock up emacs for an extended
+period of time. In devops workflows, most of the work is remote, so the
+experience is... choppy. Even worse, if a command asks for input your emacs
+might become unresponsive.
+#+end_quote
+
+This is not a TRAMP problem, and not something devops.el introduces. It is how
+=org-babel-execute-src-block= works by default: the block runs in a synchronous
+subprocess (=process-file=) and emacs waits. On a remote target this is worse
+because every command pays connection latency, and an unexpected prompt
+(=sudo=, an ssh host key confirmation, =apt= asking a question) leaves emacs
+waiting on a process that will never finish on its own.
+
+Org has an answer already, with no extra packages. Since Org 9.6 (this repo is
+developed against 9.8.7) =ob-shell= supports the =:async= header argument. Two
+constraints matter, and both come from reading the source rather than the
+manual:
+
+1. =org-babel-comint-use-async= only returns non-nil when =:async= is present in
+   the params, its value is not ="no"=, the =:session= value is not ="none"=,
+   and we are not in an export reference buffer.
+
+2. In =org-babel-sh-evaluate=, the async branch lives *inside* the session
+   branch of the =cond=. Sessionless blocks have no comint buffer to attach a
+   filter to, so =:async t= alone does nothing for shell blocks.
+
+So async is really /async-in-a-session/. To get it, we need a session name.
+
+devops.el already has one. A target declaration carries a tag (the name in
+parentheses):
+
+#+begin_example
+#+TARGET: /ssh:example.com: (example)
+#+end_example
+
+and the tag is already the thing that resolves to =:dir= for every block under a
+tagged heading, via the =org-babel-execute-src-block= advice in
+=devops--inject-header-args-from-tags=. The same advice can supply
+=:async t :session example=.
+
+The tag is the right key for a session, not the target string and not the
+heading. A shell session's working directory is fixed when the comint buffer is
+created; later blocks reusing the session do /not/ =cd= to their =:dir=. Since a
+tag maps 1:1 to a target, and a target may itself carry a directory
+(=/ssh:host:/srv/app=), keying the session by tag is exactly what keeps the
+session's cwd correct. Two tags on the same host get two sessions, which is
+correct, because they mean two directories.
+
+* Decisions
+
+** 1. Inject =:async t :session <tag>= alongside =:dir=
+
+Extend the existing advice rather than adding a second one. The heading's tag
+already produced the target; producing the session name from the same lookup
+keeps one place where "which machine is this block talking to" is decided.
+
+Executing a block under =:example:= then behaves as if the user had written:
+
+#+begin_example
+#+begin_src sh :dir /ssh:example.com: :session devops:example :async t
+apt-get update
+#+end_src
+#+end_example
+
+Emacs returns immediately with a placeholder; output lands in the results block
+when the command finishes.
+
+Beyond not blocking, this buys state: =cd=, =export=, an activated virtualenv,
+an =ssh-agent= handle all survive from one block to the next under the same
+heading. That fits the "one heading = one machine" convention from decision 1.
+It also costs idempotency — blocks become order-dependent, and a block that
+passed in a dirty session may fail in a fresh one. That is a real tradeoff, and
+the mitigation is a =devops-restart-session= command (kill the comint buffer for
+a tag) plus the habit of writing blocks that do not depend on prior ones.
+
+** 2. Session name is =devops:<tag>=, and is configurable
+
+=org-babel-sh-initiate-session= calls =(shell session)=, so the session name /is/
+the buffer name, in a single global namespace. A bare =:session example= would
+create a buffer named =example=, colliding with anything else in the emacs
+session that picked the same word — including a different org file whose
+=example= tag points at a different host. Silently sending commands to the wrong
+machine is the worst failure this package can have.
+
+Prefixing with =devops:= makes the buffer obvious in =C-x b= and removes the
+accidental collisions. It does not remove deliberate ones: two files that both
+use tag =web= for different hosts still clash. Rather than encode the target in
+the buffer name (=devops:web (/ssh:example1.com:)= is unreadable and changes
+whenever the target does), expose the naming as a variable:
+
+#+begin_example
+(defcustom devops-session-name-function
+  (lambda (tag _target) (format "devops:%s" tag))
+  ...)
+#+end_example
+
+Users with cross-file tag reuse set it to include the target or the buffer name.
+Default stays short, because short names are what people type when they attach
+to the session by hand.
+
+** 3. Explicit block headers win
+
+The advice must not override what the user wrote. This is not automatic:
+=org-babel-execute-src-block= merges its =params= argument /over/ the block's own
+params (=cl-callf org-babel-merge-params (nth 2 info) params=), so anything the
+advice passes silently beats the header line.
+
+The advice therefore reads the block's own params first and injects only the
+keys that are absent. This gives per-block escape hatches with no new syntax:
+
+- =:async no= — run this one block synchronously (=org-babel-comint-use-async=
+  already special-cases ="no"=).
+- =:session none= — no session, no async, no shared state.
+- =:session other= — attach to some other session deliberately.
+
+The same fix applies to =:dir=, which today is overridden by the advice for the
+same reason. Correcting both in one pass.
+
+** 4. Only inject a session for languages that support comint async
+
+=:session= is not a neutral header. For =emacs-lisp= it means an =ielm= buffer;
+for languages with no session support it is ignored inconsistently; for
+non-executable blocks (=json=, =conf=, =env= — the tangling blocks that decision 1
+is built around) it is meaningless. Injecting it everywhere would change the
+evaluation semantics of blocks that have nothing to do with remote execution.
+
+Restrict injection to a list of languages known to support
+=org-babel-comint-async-register=:
+
+#+begin_example
+(defcustom devops-async-session-languages '("sh" "bash" "shell" "python") ...)
+#+end_example
+
+Blocks in other languages keep getting =:dir= and nothing else, exactly as today.
+
+** 5. Tangling and noweb stay synchronous
+
+Noweb references that execute a block (=<<db-pass()>>= from decision 4 of the
+tangling ADR) resolve through =org-babel-execute-src-block=. Under async that
+call returns a UUID placeholder, and the placeholder — not the password — is
+what gets written to the tangled file on the server. Similarly,
+=devops--tangle-heading= and the drift check need real values, not futures.
+
+So async injection is suppressed whenever we are not executing on the user's
+behalf interactively. Mechanism: a dynamic variable, bound around the tangle and
+drift entry points:
+
+#+begin_example
+(defvar devops--inhibit-async nil
+  "When non-nil, do not inject :async.  Bound during tangling and drift checks.")
+#+end_example
+
+=org-babel-comint-use-async= already guards =org-babel-exp-reference-buffer= (so
+export is safe), but it knows nothing about tangling. This is ours to handle.
+
+** 6. Programmatic callers opt out explicitly
+
+=devops-tangle-headline=, =devops-tangle-custom-id=, the drift check, and the
+agent-facing flow that reads =:results output= from a block all assume the return
+value of an evaluation is the evaluation's result. Async breaks that contract by
+design. The existing test =devops-execute-src-block-injects-dir-test= asserts on
+the return value of =org-babel-execute-src-block= and would start comparing a
+UUID against a directory.
+
+Rather than making every caller remember, provide the inhibit as the supported
+interface:
+
+#+begin_example
+(defmacro devops-with-sync (&rest body) ...)  ; binds devops--inhibit-async
+#+end_example
+
+Interactive =C-c C-c= gets async. Everything scripted gets synchronous
+evaluation unless it asks otherwise. Tests run under =devops-with-sync=.
+
+** 7. Prompts go to the session buffer
+
+A command that asks a question no longer freezes emacs: the prompt sits in the
+comint buffer, waiting. That is strictly better than the current behaviour, but
+only if the user can find the buffer. Add =devops-goto-session=, which resolves
+the heading's tag to a session name and pops to it. Naming sessions after tags
+(decision 2) is what makes this a one-keystroke operation.
+
+This does not make interactive commands a good idea in a devops org file —
+=-y=, =--non-interactive=, =DEBIAN_FRONTEND=noninteractive= are still the right
+answer — but it turns a hang into a visible prompt.
+
+** 8. Deferred: exit codes and multi-target concurrency
+
+Two things this decision knowingly does not solve.
+
+Async session results are whatever the shell printed. A non-zero exit status is
+not surfaced, so the "fail fast on errors" rule from decision 1 of the tangling
+ADR does not extend to execution. Detecting failure means appending an exit
+status probe to the body and parsing it back out — a separate decision.
+
+A heading tagged =:server1:server2:= currently prompts the user to pick one
+target. Session-per-tag makes running both concurrently a natural next step, one
+session each, results merged. Keeping the prompt for now; the naming scheme is
+chosen so this does not need to be revisited.
