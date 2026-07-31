@@ -28,6 +28,9 @@
 ;; `devops-drift-headline' and `devops-drift-custom-id' run the same
 ;; check noninteractively and return the result as data, so a check can
 ;; live in a source block of the org file that documents it.
+;;
+;; Each checked block also gets one status dot per target appended to
+;; its #+begin_src line, so a file can be scanned for drift at a glance.
 
 ;;; Code:
 
@@ -336,6 +339,72 @@ they do not fit a table cell.  See `devops-drift-summary' for those."
                      (if detail (format "%s (%s)" remote detail) remote))))
            entries)))
 
+;;; Source buffer indicators
+
+(defvar devops-drift-indicator-dot "●"
+  "String shown per target on a checked block's #+begin_src line.")
+
+(defun devops-drift-clear-indicators ()
+  "Remove drift status dots from the current buffer."
+  (interactive)
+  (remove-overlays (point-min) (point-max) 'devops-drift t))
+
+(defun devops-drift--indicator-dot (entry)
+  "Return a status dot for drift ENTRY; tag and status go in the tooltip."
+  (let* ((display (cdr (assq (plist-get entry :status)
+                             devops-drift--status-display)))
+         (detail (plist-get entry :detail)))
+    (propertize devops-drift-indicator-dot
+                'face (cdr display)
+                'help-echo (format "%s: %s%s" (plist-get entry :tag)
+                                   (car display)
+                                   (if detail (format " (%s)" detail) "")))))
+
+(defun devops-drift--group-entries (entries)
+  "Group drift ENTRIES by heading position and :tangle path.
+Return an alist of ((HEADING-POS . PATH) . GROUP) preserving ENTRIES
+order at both levels, so a multi-target block's dots follow the order
+its targets were checked in (the heading's tag order)."
+  (let (groups)
+    (dolist (entry entries)
+      (let* ((key (cons (plist-get entry :heading-pos)
+                        (plist-get entry :path)))
+             (cell (assoc key groups)))
+        (if cell
+            (setcdr cell (cons entry (cdr cell)))
+          (push (cons key (list entry)) groups))))
+    (mapcar (lambda (g) (cons (car g) (nreverse (cdr g))))
+            (nreverse groups))))
+
+(defun devops-drift--decorate-source (source-buf entries)
+  "Append per-target status dots to tangling #+begin_src lines in SOURCE-BUF.
+Each block behind one of ENTRIES gets one dot per target, with face per
+`devops-drift--status-display' and the tag/status in the tooltip.
+Indicators from any previous check are replaced, so the buffer always
+reflects the latest check only."
+  (with-current-buffer source-buf
+    (devops-drift-clear-indicators)
+    (save-excursion
+      (pcase-dolist (`((,heading-pos . ,path) . ,group)
+                     (devops-drift--group-entries entries))
+        (goto-char heading-pos)
+        (let ((bound (save-excursion (org-end-of-subtree t t) (point)))
+              (dots (concat "  " (mapconcat #'devops-drift--indicator-dot
+                                            group ""))))
+          ;; Several blocks may tangle to the same file; dot each one.
+          (while (re-search-forward
+                  (concat ":tangle +" (regexp-quote path) "\\(?:[ \t]\\|$\\)")
+                  bound t)
+            (beginning-of-line)
+            ;; :tangle can sit on a #+header: line above the block.
+            (when (looking-at-p "[ \t]*#\\+header:")
+              (forward-line 1))
+            (when (looking-at-p "[ \t]*#\\+begin_src")
+              (let ((ov (make-overlay (line-end-position) (line-end-position))))
+                (overlay-put ov 'devops-drift t)
+                (overlay-put ov 'after-string dots)))
+            (end-of-line)))))))
+
 ;;; Report buffer
 
 (defvar-local devops-drift--source-buffer nil
@@ -396,7 +465,8 @@ re-runs the check."
   (let ((result (devops--drift-check devops-drift--source-buffer
                                      devops-drift--all)))
     (setq devops-drift--root (car result))
-    (setq tabulated-list-entries (devops-drift--report-rows (cdr result)))))
+    (setq tabulated-list-entries (devops-drift--report-rows (cdr result)))
+    (devops-drift--decorate-source devops-drift--source-buffer (cdr result))))
 
 (defun devops-drift--entry-at-point ()
   "Return the drift entry for the report row at point, or signal."
@@ -436,12 +506,14 @@ re-runs the check."
   "Check whether the current heading's targets match its source blocks.
 Tangles to a local temp directory (so noweb resolves exactly as a real
 tangle would), compares each file with its target and shows a *Drift
-Report* buffer.  With prefix ARG, check every target-tagged heading in
-the buffer."
+Report* buffer.  Each checked block also gets per-target status dots on
+its #+begin_src line (`devops-drift-clear-indicators' removes them).
+With prefix ARG, check every target-tagged heading in the buffer."
   (interactive "P")
   (let* ((source (current-buffer))
          (result (devops--drift-check source arg))
          (buf (get-buffer-create "*Drift Report*")))
+    (devops-drift--decorate-source source (cdr result))
     (with-current-buffer buf
       ;; Reusing the buffer: drop the previous run's temp dir before the
       ;; mode call resets the buffer-local pointing at it.
