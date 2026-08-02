@@ -145,6 +145,87 @@ You can tangle a file to multiple servers. This will create `~/foo.txt` on both
 #+END_SRC
 ```
 
+## Drift detection
+
+Tangling pushes the org file out to its targets. `devops-drift` asks the
+opposite question: does what is on the target still match what the org file
+says? The heading is tangled to a local temp directory first — so noweb, including
+per-server noweb, resolves exactly as a real tangle would — and each tangled file
+is compared byte-for-byte with its counterpart on the target. Nothing is written
+to a target: a drift check is read-only.
+
+`devops-drift` (`C-u` for the whole buffer) shows a `*Drift Report*` buffer, one
+row per file:
+
+```
+  ok       server1   /ssh:example1.com:~/foo.txt
+  DRIFT    server1   /ssh:example1.com:~/app.conf
+  MISSING  server2   /ssh:example2.com:~/app.conf
+```
+
+| Key       | Action                                    |
+|-----------|-------------------------------------------|
+| `RET`     | jump to the source block behind the row   |
+| `=`       | ediff the target against the tangled file |
+| `d`       | diff them                                 |
+| `g`       | re-run the check                          |
+
+### Checking drift from a source block
+
+The report is a buffer you read and then lose. A check written into the org file
+stays with the notes explaining it, and its result is part of the document:
+
+```org
+#+begin_src emacs-lisp :results output
+(princ (devops-drift-summary (devops-drift-headline "servers/box.org" "Caddy")))
+#+end_src
+
+#+RESULTS:
+: DRIFT    server1   /ssh:example1.com:~/caddy_etc/Caddyfile
+:
+: --- /ssh:example1.com:~/caddy_etc/Caddyfile
+: +++ ~/caddy_etc/Caddyfile (server1)
+: @@ -78,6 +78,11 @@
+: ...
+```
+
+| Function                              | Checks                                          |
+|---------------------------------------|-------------------------------------------------|
+| `(devops-drift-all source)`           | every target-tagged heading                     |
+| `(devops-drift-headline source title)` | the subtree titled `title`                     |
+| `(devops-drift-custom-id source id)`  | the subtree whose `CUSTOM_ID` is `id`           |
+
+`source` is an org buffer or a file name. All three return the same data: one
+alist per tangled file, and no temp directory left behind.
+
+| Key       | Value                                                        |
+|-----------|--------------------------------------------------------------|
+| `:status` | `:same`, `:drift`, `:missing` (no file there) or `:error`     |
+| `:tag`    | the target tag this file was tangled for                      |
+| `:path`   | the block's `:tangle` value                                   |
+| `:remote` | where that path lands on the target                           |
+| `:target` | the `#+TARGET` value                                          |
+| `:detail` | the error message, for `:error`                               |
+| `:diff`   | unified diff, target first, for `:drift`                      |
+
+`devops-drift-summary` formats that list as the text above,
+`devops-drift-table` as an org table (for `:results table`), and
+`devops-drift-ok-p` reduces it to a boolean — nil for an empty list, since a
+check that compared nothing has shown nothing.
+
+### cljbang.el
+
+If you use [cljbang.el](https://github.com/borkdude/cljbang.el), the drift API returns maps:
+
+```clojure
+(require '[devops-drift :as drift])
+
+(->> (drift/all "servers/box.org")
+     (remove #(= (:status %) :same))
+     (map (fn [{:keys [path status]}] [path status])))
+;; => (["app.conf" :drift])
+```
+
 ## Long-running commands
 
 Long commands such as `apt-get update` can lock up emacs. There are several worakrounds, from 

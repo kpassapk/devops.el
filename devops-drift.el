@@ -21,12 +21,19 @@
 ;; tangle to on their targets.  Because blocks can contain noweb
 ;; references (including per-server ones), the org file is tangled to a
 ;; local temporary directory first, then each tangled file is compared
-;; byte-for-byte with its remote counterpart.  Results land in a
-;; *Drift Report* buffer; see `devops-drift-report-mode' for keys.
+;; byte-for-byte with its remote counterpart.
+;;
+;; `devops-drift' shows the result in a *Drift Report* buffer; see
+;; `devops-drift-report-mode' for its keys.  `devops-drift-all',
+;; `devops-drift-headline' and `devops-drift-custom-id' run the same
+;; check noninteractively and return the result as data, so a check can
+;; live in a source block of the org file that documents it.
 
 ;;; Code:
 
 (require 'devops)
+(require 'diff)  ; diff-command
+(require 'subr-x)
 (require 'tabulated-list)
 
 (defun devops--drift-localize-path (path)
@@ -125,18 +132,29 @@ drift entries, plists with :tag :target :path :local :remote :heading-pos."
     (insert-file-contents-literally file)
     (buffer-string)))
 
+(defconst devops-drift--status-display
+  '((:same . ("ok" . success))
+    (:drift . ("DRIFT" . warning))
+    (:missing . ("MISSING" . error))
+    (:error . ("ERROR" . error)))
+  "Alist mapping a drift status keyword to (LABEL . FACE).")
+
+(defun devops-drift--label (status)
+  "Display label for STATUS, one of the keys of `devops-drift--status-display'."
+  (car (alist-get status devops-drift--status-display)))
+
 (defun devops--drift-status (local remote)
   "Compare LOCAL tangle output with REMOTE; return (STATUS . DETAIL).
-STATUS is `same', `drift', `missing' (no remote file) or `error'
+STATUS is `:same', `:drift', `:missing' (no remote file) or `:error'
 \(remote unreachable, DETAIL holds the message)."
   (condition-case err
       (cond
-       ((not (file-exists-p remote)) (cons 'missing nil))
+       ((not (file-exists-p remote)) (cons :missing nil))
        ((string= (devops--drift-file-contents local)
                  (devops--drift-file-contents remote))
-        (cons 'same nil))
-       (t (cons 'drift nil)))
-    (error (cons 'error (error-message-string err)))))
+        (cons :same nil))
+       (t (cons :drift nil)))
+    (error (cons :error (error-message-string err)))))
 
 (defun devops--drift-check (source-buf &optional all)
   "Tangle SOURCE-BUF to a temp dir and compare each file with its target.
@@ -168,6 +186,156 @@ The caller owns LOCAL-ROOT and must delete it."
           (plist-put entry :detail (cdr status))))
       (cons root entries))))
 
+;;; Noninteractive API
+
+;; These return data rather than a report buffer, so a drift check can be
+;; written down in the org file it checks, run with C-c C-c, and leave its
+;; result in the file.  The shape is an alist keyed by keywords: what elisp
+;; passes around, and what cljbang reads as a map, so
+;;
+;;   (require '[devops-drift :as drift])
+;;   (->> (drift/all "servers/box.org")
+;;        (remove #(= (:status %) :same))
+;;        (map :path))
+;;
+;; works without this package knowing anything about cljbang.
+
+(defun devops--drift-source-buffer (source)
+  "Return SOURCE as an org buffer.  SOURCE is a buffer or a file name."
+  (let ((buf (if (bufferp source)
+                 source
+               (find-file-noselect (expand-file-name source)))))
+    (with-current-buffer buf
+      (unless (derived-mode-p 'org-mode)
+        (error "Not an org buffer: %s" (buffer-name buf))))
+    buf))
+
+(defun devops--drift-diff (local remote path tag)
+  "Unified diff of REMOTE (old) against the tangled LOCAL file (new).
+PATH and TAG label the new side, so the output names the source block's
+:tangle path rather than a temp file nobody will find again.  `diff' runs
+locally, so a TRAMP REMOTE is copied down first.  Return nil if `diff'
+fails outright (an exit status above 1)."
+  (let* ((copy (file-local-copy remote))
+         (old (or copy remote)))
+    (unwind-protect
+        (with-temp-buffer
+          (let ((status (call-process diff-command nil t nil "-u"
+                                      "-L" remote
+                                      "-L" (format "%s (%s)" path tag)
+                                      old local)))
+            (and (memq status '(0 1)) (buffer-string))))
+      (when copy (delete-file copy)))))
+
+(defun devops--drift-entry-data (entry)
+  "Convert a drift ENTRY plist to an alist, resolving its diff.
+Drops :local and :heading-pos: both point into a temp tree the caller
+never sees, and the diff is what they were good for."
+  (let ((status (plist-get entry :status)))
+    (list (cons :status status)
+          (cons :tag (plist-get entry :tag))
+          (cons :path (plist-get entry :path))
+          (cons :remote (plist-get entry :remote))
+          (cons :target (plist-get entry :target))
+          (cons :detail (plist-get entry :detail))
+          (cons :diff (when (eq status :drift)
+                        (devops--drift-diff (plist-get entry :local)
+                                            (plist-get entry :remote)
+                                            (plist-get entry :path)
+                                            (plist-get entry :tag)))))))
+
+(defun devops--drift-entries (source-buf &optional all)
+  "Drift-check SOURCE-BUF and return entry alists, temp tree removed.
+Point selects the heading unless ALL is non-nil, exactly as in
+`devops--drift-check'.  Diffs are resolved while the tangled files are
+still there, so the return value stands on its own afterwards."
+  (let* ((result (devops--drift-check source-buf all))
+         (root (car result)))
+    (unwind-protect
+        (mapcar #'devops--drift-entry-data (cdr result))
+      (delete-directory root t))))
+
+(defun devops-drift-all (source)
+  "Drift-check every target-tagged heading in SOURCE, noninteractively.
+SOURCE is an org buffer or a file name.  Return one alist per tangled
+file, keyed :status :tag :path :remote :target :detail :diff, where
+:status is `:same', `:drift', `:missing' or `:error', and :diff holds a
+unified diff for a drifting file and nil otherwise."
+  (let ((buf (devops--drift-source-buffer source)))
+    (with-current-buffer buf
+      (save-excursion
+        (devops--drift-entries buf t)))))
+
+(defun devops-drift-headline (source headline)
+  "Drift-check the subtree titled HEADLINE in SOURCE, noninteractively.
+Locate HEADLINE with `org-find-exact-headline-in-buffer', then check it
+exactly as `devops-drift' would with point on that heading.  Return entry
+alists as `devops-drift-all' does.
+
+Surrounding whitespace in HEADLINE is ignored, so a selector taken
+straight from a `:results output' block (which carries a trailing
+newline) still matches."
+  (let ((buf (devops--drift-source-buffer source)))
+    (with-current-buffer buf
+      (save-excursion
+        (let ((pos (org-find-exact-headline-in-buffer (string-trim headline) nil t)))
+          (unless pos (error "No heading titled %S" headline))
+          (goto-char pos)
+          (devops--drift-entries buf))))))
+
+(defun devops-drift-custom-id (source custom-id)
+  "Drift-check the subtree whose CUSTOM_ID property is CUSTOM-ID, in SOURCE.
+Locate it with `org-find-property'.  Unlike `devops-drift-headline', the
+selector survives title edits and is unambiguous when several headings
+share a title.  Return entry alists as `devops-drift-all' does.
+
+Surrounding whitespace in CUSTOM-ID is ignored."
+  (let ((buf (devops--drift-source-buffer source)))
+    (with-current-buffer buf
+      (save-excursion
+        (let ((pos (org-find-property "CUSTOM_ID" (string-trim custom-id))))
+          (unless pos (error "No heading with CUSTOM_ID %S" custom-id))
+          (goto-char pos)
+          (devops--drift-entries buf))))))
+
+(defun devops-drift-ok-p (entries)
+  "Non-nil when every entry in ENTRIES is in sync.
+Nil for an empty ENTRIES too: a check that found no files to compare has
+not established that anything matches."
+  (and entries
+       (seq-every-p (lambda (entry) (eq (alist-get :status entry) :same))
+                    entries)))
+
+(defun devops-drift-summary (entries)
+  "Format ENTRIES as text: one status line per file, then any diffs.
+For an `emacs-lisp' block with `:results output'; print it with `princ'."
+  (let ((lines (mapcar
+                (lambda (entry)
+                  (let ((detail (alist-get :detail entry))
+                        (remote (alist-get :remote entry)))
+                    (format "%-8s %-12s %s"
+                            (devops-drift--label (alist-get :status entry))
+                            (alist-get :tag entry)
+                            (if detail (format "%s (%s)" remote detail) remote))))
+                entries))
+        (diffs (delq nil (mapcar (lambda (entry) (alist-get :diff entry)) entries))))
+    (string-join (append lines (and diffs (cons "" diffs))) "\n")))
+
+(defun devops-drift-table (entries)
+  "Return ENTRIES as an org table: a header row, an hline, then a row each.
+For an `emacs-lisp' block with `:results table'.  Diffs are left out;
+they do not fit a table cell.  See `devops-drift-summary' for those."
+  (append
+   (list '("Status" "Tag" "Path" "Remote") 'hline)
+   (mapcar (lambda (entry)
+             (let ((detail (alist-get :detail entry))
+                   (remote (alist-get :remote entry)))
+               (list (devops-drift--label (alist-get :status entry))
+                     (alist-get :tag entry)
+                     (alist-get :path entry)
+                     (if detail (format "%s (%s)" remote detail) remote))))
+           entries)))
+
 ;;; Report buffer
 
 (defvar-local devops-drift--source-buffer nil
@@ -178,13 +346,6 @@ The caller owns LOCAL-ROOT and must delete it."
 
 (defvar-local devops-drift--root nil
   "Temp directory holding this report's tangled files.")
-
-(defconst devops-drift--status-display
-  '((same . ("ok" . success))
-    (drift . ("DRIFT" . warning))
-    (missing . ("MISSING" . error))
-    (error . ("ERROR" . error)))
-  "Alist mapping a drift status symbol to (LABEL . FACE).")
 
 (defvar devops-drift-report-mode-map
   (let ((map (make-sparse-keymap)))
