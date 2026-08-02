@@ -213,11 +213,9 @@ alist per tangled file, and no temp directory left behind.
 `devops-drift-ok-p` reduces it to a boolean — nil for an empty list, since a
 check that compared nothing has shown nothing.
 
-### From cljbang
+### cljbang.el
 
-Entries are alists keyed by keywords, which is what
-[cljbang](https://github.com/kpassapk/cljbang.el) reads as a map. Nothing here
-depends on cljbang; if you have it, the same functions are a namespace:
+If you use [cljbang.el](https://github.com/borkdude/cljbang.el), the drift API returns maps:
 
 ```clojure
 (require '[devops-drift :as drift])
