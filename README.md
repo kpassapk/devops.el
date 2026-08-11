@@ -51,7 +51,7 @@ api-key: <<API-KEY()>>
 
 ```
 
-(Note the parenteses in `API-KEY()`).
+(Note the parentheses in `API-KEY()`).
 
 ## Limitations
 
