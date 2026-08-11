@@ -878,6 +878,79 @@ afterwards), in an org buffer visiting the formatted text."
         (kill-buffer report)
         (should-not (file-directory-p root))))))
 
+(defun devops-test--indicator-overlays (pos)
+  "Return drift indicator overlays on the line containing POS."
+  (save-excursion
+    (goto-char pos)
+    (seq-filter (lambda (ov) (overlay-get ov 'devops-drift))
+                ;; Bound past eol: `overlays-in' drops empty overlays
+                ;; sitting exactly at its END position.
+                (overlays-in (line-beginning-position)
+                             (min (1+ (line-end-position)) (point-max))))))
+
+(ert-deftest devops-drift-indicator-dots-test ()
+  "A checked block gets one dot per target, in tag order, with status faces."
+  (devops-test--with-local-target t1
+    (devops-test--with-local-target t2
+      (devops-test--with-org
+          (format (concat "#+TARGET: %s (host1)\n"
+                          "#+TARGET: %s (host2)\n\n"
+                          "* Deploy\t\t:host1:host2:\n\n"
+                          "#+begin_src txt :tangle foo.txt\nhello\n#+end_src\n")
+                  t1 t2)
+        (devops-tangle-headline (current-buffer) "Deploy")
+        ;; host1 stays in sync; host2's copy disappears out-of-band.
+        (delete-file (concat t2 "foo.txt"))
+        (let ((result (devops--drift-check (current-buffer) t)))
+          (unwind-protect
+              (progn
+                (devops-drift--decorate-source (current-buffer) (cdr result))
+                (goto-char (point-min))
+                (search-forward "#+begin_src txt")
+                (let ((ovs (devops-test--indicator-overlays (point))))
+                  (should (= 1 (length ovs)))
+                  (let ((dots (overlay-get (car ovs) 'after-string)))
+                    (should (equal (substring-no-properties dots) "  ●●"))
+                    (should (eq (get-text-property 2 'face dots) 'success))
+                    (should (eq (get-text-property 3 'face dots) 'error))
+                    (should (string-prefix-p
+                             "host1: ok" (get-text-property 2 'help-echo dots)))
+                    (should (string-prefix-p
+                             "host2: MISSING"
+                             (get-text-property 3 'help-echo dots)))))
+                (devops-drift-clear-indicators)
+                (should-not (devops-test--indicator-overlays (point))))
+            (delete-directory (car result) t)))))))
+
+(ert-deftest devops-drift-indicator-via-command-test ()
+  "`devops-drift' decorates the source; a re-run replaces the overlays."
+  (devops-test--with-local-target target
+    (devops-test--with-org
+        (format (concat "#+TARGET: %s (local)\n\n"
+                        "* Deploy\t\t:local:\n\n"
+                        "#+begin_src txt :tangle foo.txt\nhello\n#+end_src\n")
+                target)
+      (let ((source (current-buffer)))
+        (org-back-to-heading)
+        (devops-drift)
+        (let ((report (get-buffer "*Drift Report*")))
+          (unwind-protect
+              (progn
+                (with-current-buffer source
+                  (goto-char (point-min))
+                  (search-forward "#+begin_src txt")
+                  (should (= 1 (length
+                                (devops-test--indicator-overlays (point)))))
+                  ;; Second run must not stack a second overlay.
+                  (org-back-to-heading)
+                  (devops-drift))
+                (with-current-buffer source
+                  (goto-char (point-min))
+                  (search-forward "#+begin_src txt")
+                  (should (= 1 (length
+                                (devops-test--indicator-overlays (point)))))))
+            (when (buffer-live-p report) (kill-buffer report))))))))
+
 ;;; devops-lob (README: per-project tools.org)
 
 (defvar devops-test--tools-org

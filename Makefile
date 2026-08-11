@@ -5,7 +5,10 @@ TIMEOUT ?= 120
 EL := devops.el devops-lob.el devops-drift.el
 TEST := devops-test.el
 
-BATCH := $(EMACS) --batch -L .
+# Trampolines off: mocking built-ins (completing-read) otherwise triggers
+# a native compile, which fails on machines with a broken libgccjit.
+BATCH := $(EMACS) --batch -L . \
+  --eval "(setq native-comp-enable-subr-trampolines nil)"
 WATCHDOG := perl -e 'alarm shift; exec @ARGV' $(TIMEOUT)
 
 .PHONY: test test-% compile clean
