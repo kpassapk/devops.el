@@ -122,6 +122,20 @@ At the moment, if you have more than one server tag, and you press `C-c C-c`, yo
 for the server using completing-read. In the future, it would be nice to run multiple commands in
 parallel, though I haven't identified yet how to best do this.
 
+An explicit `:dir` wins over the heading's target tag. This block runs in `/tmp`, not on
+`example1.com`, and no target prompt appears even under a multi-tag heading:
+
+```
+* Do something on server1                               :server1:
+
+#+BEGIN_SRC sh :dir /tmp
+hostname
+#+END_SRC
+```
+
+This works for a `:dir` on the block, on a `#+header:` line, or inherited from a `header-args`
+property. Use `:dir nil` to run a single block locally while keeping the heading's tag.
+
 ### Tangling
 
 Tangling obeys the same target tags. This will create `~/foo.txt` in `server1`:

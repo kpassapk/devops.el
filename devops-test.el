@@ -437,6 +437,40 @@ targets land next to the org file rather than in the system temp dir."
         (should (equal (file-name-as-directory (file-truename (org-trim result)))
                        (file-name-as-directory (file-truename target))))))))
 
+(ert-deftest devops-execute-src-block-explicit-dir-wins-test ()
+  "An explicit :dir on the block overrides the heading's target."
+  (devops-test--with-local-target target
+    (devops-test--with-local-target other
+      (devops-test--with-org
+          (format (concat "#+TARGET: %s (local)\n\n"
+                          "* Run\t\t:local:\n\n"
+                          "#+begin_src sh :dir %s\npwd\n#+end_src\n")
+                  target other)
+        (goto-char (point-min))
+        (re-search-forward "begin_src")
+        (let* ((org-confirm-babel-evaluate nil)
+               (result (org-babel-execute-src-block)))
+          (should (equal (file-name-as-directory (file-truename (org-trim result)))
+                         (file-name-as-directory (file-truename other)))))))))
+
+(ert-deftest devops-execute-src-block-explicit-dir-skips-prompt-test ()
+  "With an explicit :dir, multiple target tags do not prompt for a target."
+  (devops-test--with-local-target other
+    (devops-test--with-org
+        (format (concat "#+TARGET: /srv/one/ (t1)\n"
+                        "#+TARGET: /srv/two/ (t2)\n\n"
+                        "* Run\t\t:t1:t2:\n\n"
+                        "#+begin_src sh :dir %s\npwd\n#+end_src\n")
+                other)
+      (goto-char (point-min))
+      (re-search-forward "begin_src")
+      (let ((org-confirm-babel-evaluate nil))
+        (cl-letf (((symbol-function 'completing-read)
+                   (lambda (&rest _) (error "Should not prompt for a target"))))
+          (should (equal (file-name-as-directory
+                          (file-truename (org-trim (org-babel-execute-src-block))))
+                         (file-name-as-directory (file-truename other)))))))))
+
 ;;; Multi-target tangling (README: same file to several servers)
 
 (ert-deftest devops-tangle-multi-target-test ()

@@ -90,13 +90,27 @@ user to select one."
   (let ((dir (devops--heading-target-dir)))
     (org-entry-put nil "header-args" (format ":dir %s" dir))))
 
-(defun devops--inject-header-args-from-tags (orig-fn &optional arg info params _babel-call)
-  "Advise org-babel-execute-src-block to inject :dir"
-  (let* ((dir (devops--heading-target-dir))
+(defun devops--explicit-dir-p (info params)
+  "Return non-nil if the block being executed already specifies :dir.
+PARAMS is the override alist given to `org-babel-execute-src-block' and
+INFO its src block info, or nil when point is on the block.  Covers a
+:dir on the block itself, on a #+header: line, or inherited from a
+`header-args' property."
+  (or (assq :dir params)
+      (assq :dir (nth 2 (or info
+                            (ignore-errors
+                              (org-babel-get-src-block-info 'no-eval)))))))
+
+(defun devops--inject-header-args-from-tags (orig-fn &optional arg info params executor-type)
+  "Advise org-babel-execute-src-block to inject :dir from #+TARGET tags.
+An explicit :dir wins: the heading's target is neither resolved nor
+prompted for when the block already carries one."
+  (let* ((dir (unless (devops--explicit-dir-p info params)
+                (devops--heading-target-dir)))
          (params (if dir
                      (cons (cons :dir dir) params)
                    params)))
-    (funcall orig-fn arg info params)))
+    (apply orig-fn arg info params (and executor-type (list executor-type)))))
 
 (advice-add 'org-babel-execute-src-block :around #'devops--inject-header-args-from-tags)
 
