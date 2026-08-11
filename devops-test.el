@@ -471,6 +471,73 @@ targets land next to the org file rather than in the system temp dir."
                           (file-truename (org-trim (org-babel-execute-src-block))))
                          (file-name-as-directory (file-truename other)))))))))
 
+(ert-deftest devops-execute-src-block-target-nil-runs-locally-test ()
+  "`:target nil' opts the block out of the heading's target."
+  (devops-test--with-local-target target
+    (devops-test--with-org
+        (format (concat "#+TARGET: %s (local)\n\n"
+                        "* Run\t\t:local:\n\n"
+                        "#+begin_src sh :target nil\npwd\n#+end_src\n")
+                target)
+      (goto-char (point-min))
+      (re-search-forward "begin_src")
+      (let* ((here default-directory)
+             (org-confirm-babel-evaluate nil)
+             (result (file-name-as-directory
+                      (file-truename (org-trim (org-babel-execute-src-block))))))
+        (should (equal result (file-name-as-directory (file-truename here))))
+        (should-not (equal result
+                           (file-name-as-directory (file-truename target))))))))
+
+(ert-deftest devops-execute-src-block-target-nil-skips-prompt-test ()
+  "With `:target nil', multiple target tags do not prompt for a target."
+  (devops-test--with-org
+      (concat "#+TARGET: /srv/one/ (t1)\n"
+              "#+TARGET: /srv/two/ (t2)\n\n"
+              "* Run\t\t:t1:t2:\n\n"
+              "#+begin_src sh :target nil\npwd\n#+end_src\n")
+    (goto-char (point-min))
+    (re-search-forward "begin_src")
+    (let ((here default-directory)
+          (org-confirm-babel-evaluate nil))
+      (cl-letf (((symbol-function 'completing-read)
+                 (lambda (&rest _) (error "Should not prompt for a target"))))
+        (should (equal (file-name-as-directory
+                        (file-truename (org-trim (org-babel-execute-src-block))))
+                       (file-name-as-directory (file-truename here))))))))
+
+(ert-deftest devops-execute-src-block-target-nil-from-property-test ()
+  "`:target nil' works when inherited from a `header-args' property."
+  (devops-test--with-local-target target
+    (devops-test--with-org
+        (format (concat "#+TARGET: %s (local)\n\n"
+                        "* Run\t\t:local:\n"
+                        ":PROPERTIES:\n"
+                        ":header-args: :target nil\n"
+                        ":END:\n\n"
+                        "#+begin_src sh\npwd\n#+end_src\n")
+                target)
+      (goto-char (point-min))
+      (re-search-forward "begin_src")
+      (let ((here default-directory)
+            (org-confirm-babel-evaluate nil))
+        (should (equal (file-name-as-directory
+                        (file-truename (org-trim (org-babel-execute-src-block))))
+                       (file-name-as-directory (file-truename here))))))))
+
+(ert-deftest devops-execute-src-block-unknown-target-errors-test ()
+  "An unrecognized :target value errors rather than falling back to the tag."
+  (devops-test--with-local-target target
+    (devops-test--with-org
+        (format (concat "#+TARGET: %s (local)\n\n"
+                        "* Run\t\t:local:\n\n"
+                        "#+begin_src sh :target elsewhere\npwd\n#+end_src\n")
+                target)
+      (goto-char (point-min))
+      (re-search-forward "begin_src")
+      (let ((org-confirm-babel-evaluate nil))
+        (should-error (org-babel-execute-src-block) :type 'user-error)))))
+
 ;;; Multi-target tangling (README: same file to several servers)
 
 (ert-deftest devops-tangle-multi-target-test ()

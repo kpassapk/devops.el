@@ -90,22 +90,50 @@ user to select one."
   (let ((dir (devops--heading-target-dir)))
     (org-entry-put nil "header-args" (format ":dir %s" dir))))
 
-(defun devops--explicit-dir-p (info params)
-  "Return non-nil if the block being executed already specifies :dir.
+(defconst devops--target-none-values '(nil "nil" "none")
+  "Values of a :target header argument that mean \"no target\".
+Org reads a header value as a string, so a block written `:target nil'
+arrives as \"nil\".  A genuine nil is accepted too, for params passed to
+`org-babel-execute-src-block' from Lisp.")
+
+(defun devops--block-params (info)
+  "Return the header arguments of the src block being executed.
+INFO is the src block info given to `org-babel-execute-src-block', or nil
+when point is on the block.  Covers header arguments on the block itself,
+on a #+header: line, inherited from a `header-args' property, and the
+defaults in `org-babel-default-header-args'."
+  (nth 2 (or info
+             (ignore-errors
+               (org-babel-get-src-block-info 'no-eval)))))
+
+(defun devops--header-cell (key params block-params)
+  "Return the (KEY . VALUE) header argument in effect, or nil.
 PARAMS is the override alist given to `org-babel-execute-src-block' and
-INFO its src block info, or nil when point is on the block.  Covers a
-:dir on the block itself, on a #+header: line, or inherited from a
-`header-args' property."
-  (or (assq :dir params)
-      (assq :dir (nth 2 (or info
-                            (ignore-errors
-                              (org-babel-get-src-block-info 'no-eval)))))))
+BLOCK-PARAMS the block's own header arguments.  PARAMS wins, as it does
+in `org-babel-merge-params'."
+  (or (assq key params)
+      (assq key block-params)))
+
+(defun devops--target-opted-out-p (params block-params)
+  "Return non-nil if a :target header opts the block out of its heading's target.
+PARAMS and BLOCK-PARAMS are as in `devops--header-cell'.  Signal an error
+for any :target value other than those in `devops--target-none-values':
+running on the heading's target is the wrong answer when the block asked
+for something else, and silence would hide the mistake until it landed on
+a server."
+  (when-let* ((cell (devops--header-cell :target params block-params)))
+    (or (member (cdr cell) devops--target-none-values)
+        (user-error "Unknown :target value %S (expected nil)" (cdr cell)))))
 
 (defun devops--inject-header-args-from-tags (orig-fn &optional arg info params executor-type)
   "Advise org-babel-execute-src-block to inject :dir from #+TARGET tags.
 An explicit :dir wins: the heading's target is neither resolved nor
-prompted for when the block already carries one."
-  (let* ((dir (unless (devops--explicit-dir-p info params)
+prompted for when the block already carries one.  `:target nil' opts the
+block out of the heading's target without naming a directory, leaving
+:dir to org."
+  (let* ((block-params (devops--block-params info))
+         (dir (unless (or (devops--target-opted-out-p params block-params)
+                          (devops--header-cell :dir params block-params))
                 (devops--heading-target-dir)))
          (params (if dir
                      (cons (cons :dir dir) params)

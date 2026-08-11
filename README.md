@@ -122,23 +122,37 @@ At the moment, if you have more than one server tag, and you press `C-c C-c`, yo
 for the server using completing-read. In the future, it would be nice to run multiple commands in
 parallel, though I haven't identified yet how to best do this.
 
-An explicit `:dir` wins over the heading's target tag. This block runs in `/tmp`, not on
-`example1.com`, and no target prompt appears even under a multi-tag heading:
+### Disabling with :target nil
+
+Sometimes you may want to "turn off" the target for a single block with `:target nil`.
+
+As an example, let's say we have a container `TARGET`:
 
 ```
-* Do something on server1                               :server1:
+#+TARGET: /ssh:server.com|podman:my-container: (container)
+```
 
-#+BEGIN_SRC sh :dir /tmp
-hostname
+We can run a command and then use filter the results locally:
+
+```
+* Tailscale status                                      :container:
+
+#+NAME: status
+#+BEGIN_SRC sh
+some-cli status --json
+#+END_SRC
+
+#+BEGIN_SRC sh :stdin status :target nil
+jq -r '.services | keys'
 #+END_SRC
 ```
 
-This works for a `:dir` on the block, on a `#+header:` line, or inherited from a `header-args`
-property. Use `:dir nil` to run a single block locally while keeping the heading's tag.
+This will work even if the `jq` command was not installed in the container, since we added
+`:target nil` to the second block.
 
 ### Tangling
 
-Tangling obeys the same target tags. This will create `~/foo.txt` in `server1`:
+Tangling obeys the same targets. This will create `~/foo.txt` in `server1`:
 
 ```
 * Upload a file to server1                              :server1:
