@@ -122,37 +122,6 @@ At the moment, if you have more than one server tag, and you press `C-c C-c`, yo
 for the server using completing-read. In the future, it would be nice to run multiple commands in
 parallel, though I haven't identified yet how to best do this.
 
-### Disabling with :target nil
-
-Sometimes you may want to "turn off" the target for a single block with `:target nil`.
-
-As an example, let's say we have a container `TARGET`:
-
-```
-#+TARGET: /ssh:server.com|podman:my-container: (container)
-```
-
-We can run a command and then use filter the results locally:
-
-```
-* Tailscale status                                      :container:
-
-#+NAME: status
-#+BEGIN_SRC sh
-some-cli status --json
-#+END_SRC
-
-#+BEGIN_SRC sh :stdin status :target nil
-jq -r '.services | keys'
-#+END_SRC
-```
-
-This will work even if the `jq` command was not installed in the container, since we added
-`:target nil` to the second block.
-
-`:target nil` tangles locally. See
-[Tangling with :target nil](#tangling-with-target-nil).
-
 ### Tangling
 
 Tangling obeys the same targets. This will create `~/foo.txt` in `server1`:
@@ -193,12 +162,40 @@ Absolute and `~` paths are already absolute on the target's machine, so they
 replace the target's directory and keep only its host.
 
 For a local directory target such as `#+TARGET: /srv/app/ (staging)` there is
-no host to keep, so `:tangle /etc/foo.txt` writes to `/etc/foo.txt` — outside
+no host to keep, so `:tangle /etc/foo.txt` writes to `/etc/foo.txt` outside
 the target directory.
 
-### Tangling with :target nil
+## Disabling with :target nil
 
-`:target nil` behaves like `org-babel-tangle`.
+Sometimes you may want to "turn off" the target for a single block.
+
+As an example, let's say we have a container `TARGET`:
+
+```
+#+TARGET: /ssh:server.com|podman:my-container: (container)
+```
+
+We can filter the results locally by adding `target: nil` to a second block:
+
+```
+* Service status                                      :container:
+
+#+NAME: status
+#+BEGIN_SRC sh
+some-cli status --json
+#+END_SRC
+
+#+BEGIN_SRC sh :stdin status :target nil
+jq -r '.services
+  | to_entries[]
+  | select(.value.state != "running")
+  | "\(.key)\t\(.value.state)\t\(.value.health)"'
+#+END_SRC
+```
+
+This will work even if the `jq` command is not installed in the container.
+
+Tangling with `:target nil` behaves like `org-babel-tangle`.
 
 ```
 * Deploy                                                :server1:
@@ -211,8 +208,6 @@ the target directory.
 ... stays next to the org file ...
 #+END_SRC
 ```
-
-Use `:tangle no` if you want a block not to tangle at all. 
 
 ## Drift detection
 
