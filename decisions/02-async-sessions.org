@@ -198,12 +198,12 @@ answer — but it turns a hang into a visible prompt.
 
 Two things this decision knowingly does not solve.
 
-Async session results are whatever the shell printed. A non-zero exit status is
+1. Async session results are whatever the shell printed. A non-zero exit status is
 not surfaced, so the "fail fast on errors" rule from decision 1 of the tangling
 ADR does not extend to execution. Detecting failure means appending an exit
 status probe to the body and parsing it back out — a separate decision.
 
-A heading tagged =:server1:server2:= currently prompts the user to pick one
+2. A heading tagged =:server1:server2:= currently prompts the user to pick one
 target. Session-per-tag makes running both concurrently a natural next step, one
 session each, results merged. Keeping the prompt for now; the naming scheme is
 chosen so this does not need to be revisited.
