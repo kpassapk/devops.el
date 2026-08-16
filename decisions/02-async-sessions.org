@@ -207,3 +207,30 @@ status probe to the body and parsing it back out — a separate decision.
 target. Session-per-tag makes running both concurrently a natural next step, one
 session each, results merged. Keeping the prompt for now; the naming scheme is
 chosen so this does not need to be revisited.
+
+* Implementation notes
+
+Two things the decisions above did not anticipate.
+
+** =:session none= is org's default, not an opt-out signal
+
+=org-babel-default-header-args= contains =(:session . "none")=, so /every/
+block arrives at the advice already carrying =:session none=. Reading the
+merged header arguments cannot tell a block that opted out of sessions from one
+that never mentioned them, which is what decision 4 assumed.
+
+=devops--user-header-args= resolves it: re-read the block with
+=org-babel-default-header-args= and its language-specific counterpart bound to
+nil, and whatever =:session= survives was written by the user. Any value other
+than ="none"= needs no such check — no default produces one.
+
+Where the block cannot be re-read, "declared" is the safe answer. A =#+call:=
+line executes with an =INFO= built from the Library of Babel while point is not
+on a src block, so it gets no session: losing async on call lines is a smaller
+error than attaching a block to shared state it never asked for.
+
+** =:async yes=, not =:async t=
+
+=ob-shell= and =ob-python= both declare the header as =(async . ((yes no)))=,
+and =org-babel-comint-use-async= only tests against ="no"=. Injecting ="yes"=
+matches what the languages document; a hand-written =:async t= still works.

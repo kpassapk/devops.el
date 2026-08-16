@@ -37,6 +37,65 @@
   :type '(choice (const ghostty))
   :group 'devops)
 
+(defcustom devops-enable-session-async nil
+  "When non-nil, run blocks under a target-tagged heading in an async session.
+A src block then gets `:session' and `:async' injected alongside its
+`:dir', so emacs returns immediately with a placeholder and the output
+lands in the results block when the command finishes.  A command that
+asks a question waits in the session buffer instead of hanging emacs;
+`devops-goto-session' goes there.
+
+Off by default, because a session makes blocks stateful: `cd', `export',
+an activated virtualenv and `ssh-agent' survive from one block to the
+next, which is useful but costs idempotency.  A block that passed in a
+dirty session may fail in a fresh one, so prefer blocks that do not
+depend on the ones above them, and use `devops-restart-session' to get
+back to a known state."
+  :type 'boolean
+  :group 'devops)
+
+(defcustom devops-session-name-function
+  (lambda (tag _target) (format "devops:%s" tag))
+  "Function mapping a target TAG and TARGET to a session name.
+A shell session name is a buffer name in a single global namespace, so a
+bare tag like \"web\" would collide with anything else that picked the
+same word — including another org file whose \"web\" tag points at a
+different host.  Sending commands to the wrong machine is the worst
+failure this package can have, so the default prefixes `devops:'.
+
+That removes accidental collisions, not deliberate ones.  If two org
+files reuse a tag for different hosts, set this to a function that also
+folds in the target or the buffer name."
+  :type 'function
+  :group 'devops)
+
+(defcustom devops-async-session-languages '("sh" "bash" "shell" "python")
+  "Languages that get a `:session' and `:async' injected.
+`:session' is not a neutral header argument: for `emacs-lisp' it means an
+ielm buffer, and for the non-executable blocks that carry `:tangle' it is
+meaningless.  Only languages that support `org-babel-comint-async-register'
+belong here; blocks in any other language keep getting `:dir' and nothing
+else."
+  :type '(repeat string)
+  :group 'devops)
+
+(defvar devops--inhibit-async nil
+  "When non-nil, do not inject `:session' or `:async'.
+Bound by `devops-with-sync' around tangling and drift checks.")
+
+(defmacro devops-with-sync (&rest body)
+  "Run BODY with async injection inhibited.
+Async breaks the contract that the return value of
+`org-babel-execute-src-block' is the block's result: under `:async' it is
+a UUID placeholder.  Anything that reads that value — a noweb reference
+that executes a block, `devops-tangle-headline', a drift check — needs
+the real thing, so it runs inside this macro.  Interactive \\[org-ctrl-c-ctrl-c]
+gets async; everything scripted gets synchronous evaluation unless it
+asks otherwise."
+  (declare (indent 0) (debug t))
+  `(let ((devops--inhibit-async t))
+     ,@body))
+
 (defun devops--parse-target-keyword (value)
   "Parse a #+TARGET value like \"target1 (source)\" into (TAG . TARGET)."
   (when (string-match "\\`\\([^ ]+\\) +(\\([^)]+\\))\\'" value)
@@ -65,24 +124,32 @@ Searches heading's tags against all #+TARGET keywords."
                       (cons tag target)))
                   tags))))
 
-(defun devops--heading-target-dir ()
-  "Return :dir from the current heading's tags and #+TARGET mappings.
-If there is more than one target, use completing-read, allowing the
-user to select one."
-  (interactive)
+(defun devops--heading-target ()
+  "Return the (TAG . TARGET) in effect for the current heading, or nil.
+If more than one of the heading's tags names a target, use
+completing-read, allowing the user to select one.  The tag is kept
+alongside the target because it, not the directory, is what names the
+session: a tag maps 1:1 to a target, and two tags on the same host mean
+two directories, hence two sessions."
   (let ((matches (devops--heading-target-tags)))
     (cond
      ((null matches)
       nil)
      ((= 1 (length matches))
-      (cdr (car matches)))
+      (car matches))
      (t
       (let* ((options (mapcar (lambda (pair)
                                 (cons (format "%s: %s" (car pair) (cdr pair))
-                                      (cdr pair)))
+                                      pair))
                               matches))
              (selected (completing-read "Choose target: " (mapcar #'car options) nil t)))
         (cdr (assoc selected options)))))))
+
+(defun devops--heading-target-dir ()
+  "Return :dir from the current heading's tags and #+TARGET mappings.
+If there is more than one target, use completing-read, allowing the
+user to select one."
+  (cdr (devops--heading-target)))
 
 (defun devops-set-header-args-from-tags ()
   "Set :header-args: :dir from the current heading's tag and #+TARGET mappings."
@@ -96,15 +163,21 @@ Org reads a header value as a string, so a block written `:target nil'
 arrives as \"nil\".  A genuine nil is accepted too, for params passed to
 `org-babel-execute-src-block' from Lisp.")
 
+(defun devops--block-info (info)
+  "Return the src block info for the block being executed.
+INFO is the info given to `org-babel-execute-src-block', or nil when
+point is on the block."
+  (or info
+      (ignore-errors
+        (org-babel-get-src-block-info 'no-eval))))
+
 (defun devops--block-params (info)
   "Return the header arguments of the src block being executed.
 INFO is the src block info given to `org-babel-execute-src-block', or nil
 when point is on the block.  Covers header arguments on the block itself,
 on a #+header: line, inherited from a `header-args' property, and the
 defaults in `org-babel-default-header-args'."
-  (nth 2 (or info
-             (ignore-errors
-               (org-babel-get-src-block-info 'no-eval)))))
+  (nth 2 (devops--block-info info)))
 
 (defun devops--header-cell (key params block-params)
   "Return the (KEY . VALUE) header argument in effect, or nil.
@@ -147,22 +220,138 @@ block's header from any other."
       (when (and (>= pos (car region)) (< pos (cdr region)))
         (throw 'hit t)))))
 
+(defun devops--session-name (tag target)
+  "Return the session name for TAG and TARGET."
+  (funcall devops-session-name-function tag target))
+
+(defun devops--user-header-args (lang)
+  "Return the header arguments written on the src block at point.
+Org's defaults are unbound while the block is read, so a `:session none'
+in the result is one the user wrote rather than the one
+`org-babel-default-header-args' hands to every block.  LANG names the
+language-specific defaults to suppress along with the global ones.
+Returns nil when point is not on a src block."
+  (let* ((sym (and lang (intern-soft
+                         (concat "org-babel-default-header-args:" lang))))
+         (lang-default (and sym (boundp sym) sym))
+         (saved (and lang-default (symbol-value lang-default)))
+         (org-babel-default-header-args nil))
+    (unwind-protect
+        (progn
+          (when lang-default (set lang-default nil))
+          (nth 2 (ignore-errors (org-babel-get-src-block-info 'no-eval))))
+      (when lang-default (set lang-default saved)))))
+
+(defun devops--session-declared-p (params block-params lang)
+  "Non-nil when the block, not org, decided its `:session'.
+`org-babel-default-header-args' gives every block `:session none', so the
+merged header arguments cannot tell a block that opted out of sessions
+from one that never mentioned them.  Any other value had to be written by
+hand; \"none\" is re-checked against the block's own header arguments
+\(see `devops--user-header-args').
+
+Unreadable cases count as declared.  A `#+call:' line, for instance, is
+executed with an INFO built from the Library of Babel while point is not
+on a src block, so nothing here can prove the block said nothing — and
+attaching a block to a shared session it did not ask for is the error
+worth avoiding."
+  (let ((cell (devops--header-cell :session params block-params)))
+    (and cell
+         (or (not (equal (cdr cell) "none"))
+             (assq :session params)
+             (let ((own (devops--user-header-args lang)))
+               (or (null own) (assq :session own)))))))
+
+(defun devops--async-session-cells (params block-params lang tag target)
+  "Return the :session and :async header cells to inject, or nil.
+PARAMS and BLOCK-PARAMS are as in `devops--header-cell', LANG is the
+block's language, and TAG and TARGET the heading's resolved target.
+Nothing is injected unless `devops-enable-session-async' is on, LANG is
+in `devops-async-session-languages', and we are executing on the user's
+behalf rather than under `devops-with-sync'.
+
+What the block already says is left alone, so per-block escape hatches
+need no new syntax: `:async no' runs one block synchronously in the
+heading's session, `:session none' gives it neither a session nor async,
+and `:session other' attaches it to a session of the user's choosing."
+  (when (and devops-enable-session-async
+             (not devops--inhibit-async)
+             (member lang devops-async-session-languages))
+    (let* ((declared (devops--session-declared-p params block-params lang))
+           (session (cdr (devops--header-cell :session params block-params))))
+      (unless (and declared (equal session "none"))
+        (append
+         (unless declared
+           (list (cons :session (devops--session-name tag target))))
+         (unless (devops--header-cell :async params block-params)
+           (list (cons :async "yes"))))))))
+
 (defun devops--inject-header-args-from-tags (orig-fn &optional arg info params executor-type)
   "Advise org-babel-execute-src-block to inject :dir from #+TARGET tags.
 An explicit :dir wins: the heading's target is neither resolved nor
 prompted for when the block already carries one.  `:target nil' opts the
 block out of the heading's target without naming a directory, leaving
-:dir to org."
-  (let* ((block-params (devops--block-params info))
-         (dir (unless (or (devops--target-opted-out-p params block-params)
-                          (devops--header-cell :dir params block-params))
-                (devops--heading-target-dir)))
-         (params (if dir
-                     (cons (cons :dir dir) params)
+:dir to org.
+
+When the heading's target is what supplies :dir, the same lookup can also
+supply :session and :async; see `devops--async-session-cells'.  A block
+that named its own :dir is running somewhere devops did not choose, so it
+gets no session either."
+  (let* ((block-info (devops--block-info info))
+         (block-params (nth 2 block-info))
+         (pair (unless (or (devops--target-opted-out-p params block-params)
+                           (devops--header-cell :dir params block-params))
+                 (devops--heading-target)))
+         (params (if pair
+                     ;; Ours first: within one alist `org-babel-merge-params'
+                     ;; lets a later pair overwrite an earlier one, so an
+                     ;; explicit PARAMS from the caller still wins.
+                     (append (cons (cons :dir (cdr pair))
+                                   (devops--async-session-cells
+                                    params block-params (nth 0 block-info)
+                                    (car pair) (cdr pair)))
+                             params)
                    params)))
     (apply orig-fn arg info params (and executor-type (list executor-type)))))
 
 (advice-add 'org-babel-execute-src-block :around #'devops--inject-header-args-from-tags)
+
+(defun devops--heading-session-name ()
+  "Return the session name for the current heading's target.
+Signal a `user-error' if no tag on the heading names a target."
+  (let ((pair (or (devops--heading-target)
+                  (user-error "No #+TARGET match for tags on current heading"))))
+    (devops--session-name (car pair) (cdr pair))))
+
+;;;###autoload
+(defun devops-goto-session ()
+  "Pop to the session buffer for the current heading's target.
+Under `devops-enable-session-async' a command that asks a question — sudo,
+an ssh host key confirmation, apt — no longer freezes emacs: the prompt
+sits in the session buffer waiting for an answer.  This is how to get
+there and answer it."
+  (interactive)
+  (let ((name (devops--heading-session-name)))
+    (pop-to-buffer
+     (or (get-buffer name)
+         (user-error "No session %s yet; run a block under this heading" name)))))
+
+;;;###autoload
+(defun devops-restart-session ()
+  "Kill the session buffer for the current heading's target.
+The next block run under the heading starts a fresh shell, at the
+target's directory and with none of the state — `cd', `export', an
+activated virtualenv — that earlier blocks left behind."
+  (interactive)
+  (let* ((name (devops--heading-session-name))
+         (buf (get-buffer name)))
+    (if (not buf)
+        (message "No session %s" name)
+      ;; A live comint process would otherwise ask for confirmation, which
+      ;; is the whole point of the command.
+      (let ((kill-buffer-query-functions nil))
+        (kill-buffer buf))
+      (message "Killed session %s" name))))
 
 (defun devops--specialize-noweb-blocks (tag)
   "Rewrite #+name: FOO (TAG) blocks for server-specific noweb resolution.
@@ -318,16 +507,22 @@ Otherwise include only the current heading."
   "Tangle each entry of SPEC from SOURCE-BUF.
 SPEC is a list of plists as built by `devops--tangle-spec'.  Return a list
 of (TAG TARGET N) results.  Free of interaction and messaging, so it can be
-driven noninteractively (e.g. from a pod or a test)."
-  (let ((results nil))
-    (dolist (entry spec)
-      (let* ((tag (plist-get entry :tag))
-             (target (plist-get entry :target))
-             (heading-pos (plist-get entry :heading-pos))
-             (n (devops--tangle-heading source-buf heading-pos tag target)))
-        (when n
-          (push (list tag target n) results))))
-    (nreverse results)))
+driven noninteractively (e.g. from a pod or a test).
+
+Runs under `devops-with-sync': a noweb reference that executes a block
+must resolve to the block's output, and under `:async' it would resolve
+to a UUID placeholder — which is then what gets written to the file on
+the server."
+  (devops-with-sync
+    (let ((results nil))
+      (dolist (entry spec)
+        (let* ((tag (plist-get entry :tag))
+               (target (plist-get entry :target))
+               (heading-pos (plist-get entry :heading-pos))
+               (n (devops--tangle-heading source-buf heading-pos tag target)))
+          (when n
+            (push (list tag target n) results))))
+      (nreverse results))))
 
 (defun devops--tangle-report (results)
   "Format RESULTS from `devops--tangle-spec-execute' as a status string."

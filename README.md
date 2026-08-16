@@ -272,8 +272,84 @@ If you use [cljbang.el](https://github.com/borkdude/cljbang.el), the drift API r
 
 ## Long-running commands
 
-Long commands such as `apt-get update` can lock up emacs. There are several worakrounds, from 
-using sessions and `:async yes` (built in), to [ob-async](https://github.com/astahlman/ob-async), and probably others. YMMV.
+Long commands such as `apt-get update` can lock up emacs. By default a block
+runs in a synchronous subprocess and emacs waits; on a remote target every
+command also pays connection latency, and an unexpected prompt (`sudo`, an ssh
+host key confirmation, `apt` asking a question) leaves emacs waiting on a
+process that will never finish on its own.
+
+Org's answer is `:async` — but only inside a `:session`, since a sessionless
+shell block has no comint buffer to attach a filter to. A target tag is already
+a name for "which machine is this block talking to", so it can name the session
+too:
+
+```elisp
+(setq devops-enable-session-async t)
+```
+
+With that on, a block under a target-tagged heading is executed as if you had
+written the session and async headers yourself:
+
+```
+#+begin_src sh :dir /ssh:example.com: :session devops:example :async yes
+apt-get update
+#+end_src
+```
+
+Emacs returns immediately with a placeholder and the output replaces it when
+the command finishes. A command that asks a question no longer hangs emacs
+either: the prompt waits in the session buffer, and `devops-goto-session` takes
+you there to answer it.
+
+This is off by default because it makes blocks stateful. `cd`, `export`, an
+activated virtualenv and `ssh-agent` now survive from one block to the next
+under the same heading, which is useful, but it costs idempotency: blocks become
+order-dependent, and a block that passed in a dirty session may fail in a fresh
+one. Prefer blocks that do not depend on the ones above them, and use
+`devops-restart-session` to get back to a clean shell.
+
+Two tags on the same host get two sessions, because two tags mean two
+directories — a shell session's working directory is fixed when its buffer is
+created, and later blocks do not `cd` to their `:dir`.
+
+| Command                  | What it does                                     |
+|--------------------------|--------------------------------------------------|
+| `devops-goto-session`    | Pop to the heading's session buffer               |
+| `devops-restart-session` | Kill it, so the next block starts a fresh shell   |
+
+### Per-block escape hatches
+
+Whatever the block itself says wins:
+
+| Header          | Effect                                                    |
+|-----------------|-----------------------------------------------------------|
+| `:async no`     | Run this one block synchronously, in the same session      |
+| `:session none` | No session, no async, no state shared with other blocks    |
+| `:session foo`  | Attach to a session of your choosing                       |
+| `:target nil`   | No target, and so no session either                        |
+
+A block that names its own `:dir` is running somewhere devops did not choose,
+so it gets no session either.
+
+Only languages in `devops-async-session-languages` (`sh`, `bash`, `shell`,
+`python`) are affected. `:session` is not a neutral header argument — for
+`emacs-lisp` it means an ielm buffer, and for the non-executable blocks that
+carry `:tangle` it is meaningless — so everything else keeps getting `:dir` and
+nothing more.
+
+Tangling and drift checks stay synchronous, because they need real values: a
+noweb reference that executes a block (`<<SECRET()>>`) would otherwise resolve
+to the placeholder, and the placeholder is what would get written to the file on
+the server. Anything else that reads the return value of
+`org-babel-execute-src-block` should wrap it in `devops-with-sync`.
+
+Session names come from `devops-session-name-function`, which defaults to
+`devops:<tag>`. A session name is a buffer name in a single global namespace, so
+if two org files use the same tag for different hosts, set this to a function
+that also folds in the target or the buffer name.
+
+If you would rather not use sessions at all, there is also
+[ob-async](https://github.com/astahlman/ob-async), and probably others. YMMV.
 
 [ob-screen]: https://howardism.org/Technical/Emacs/literate-devops.html#fnr.4
 
