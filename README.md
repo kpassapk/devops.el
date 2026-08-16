@@ -187,9 +187,7 @@ jq -r '.services
 #+END_SRC
 ```
 
-This will work even if the `jq` command is not installed in the container.
-
-Tangling with `:target nil` behaves like `org-babel-tangle`.
+This will work even if the `jq` command is not installed in the container :)
 
 ## Drift detection
 
