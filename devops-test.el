@@ -126,7 +126,52 @@ The directory is removed afterwards."
   (should (equal (devops--join-target "/ssh:host:/etc" "foo.txt")
                  "/ssh:host:/etc/foo.txt"))
   (should (equal (devops--join-target "/ssh:host:/etc/" "foo.txt")
-                 "/ssh:host:/etc/foo.txt")))
+                 "/ssh:host:/etc/foo.txt"))
+  ;; A relative subdirectory keeps its shape, spelled either way.
+  (should (equal (devops--join-target "/ssh:host:" "dir/foo.txt")
+                 "/ssh:host:dir/foo.txt"))
+  (should (equal (devops--join-target "/ssh:host:" "./dir/foo.txt")
+                 "/ssh:host:dir/foo.txt"))
+  (should (equal (devops--join-target "/srv/app" "./dir/foo.txt")
+                 "/srv/app/dir/foo.txt"))
+  ;; "." as a target and "./" on the path collapse to one "./".
+  (should (equal (devops--join-target "." "./foo.txt") "./foo.txt")))
+
+(ert-deftest devops--split-target-test ()
+  "Split a target into its TRAMP prefix and its directory part."
+  (should (equal (devops--split-target "/srv/app") '("" . "/srv/app")))
+  (should (equal (devops--split-target ".") '("" . ".")))
+  (should (equal (devops--split-target "/ssh:host:") '("/ssh:host:" . "")))
+  (should (equal (devops--split-target "/ssh:host:/etc") '("/ssh:host:" . "/etc")))
+  ;; Multi-hop: the whole hop chain is the prefix (`file-remote-p' would
+  ;; report only "/podman:box:").
+  (should (equal (devops--split-target "/ssh:host|podman:box:")
+                 '("/ssh:host|podman:box:" . ""))))
+
+(ert-deftest devops--join-target-absolute-path-test ()
+  "An absolute :tangle path is absolute on the target's machine."
+  ;; The TRAMP prefix survives; the target's directory does not.
+  (should (equal (devops--join-target "/ssh:host:" "/etc/app.conf")
+                 "/ssh:host:/etc/app.conf"))
+  (should (equal (devops--join-target "/ssh:host:/opt/app" "/etc/app.conf")
+                 "/ssh:host:/etc/app.conf"))
+  (should (equal (devops--join-target "/ssh:host|podman:box:/opt" "/etc/app.conf")
+                 "/ssh:host|podman:box:/etc/app.conf"))
+  ;; A local directory target has no prefix to keep, so the path stands alone.
+  (should (equal (devops--join-target "/srv/app/" "/etc/app.conf")
+                 "/etc/app.conf"))
+  (should (equal (devops--join-target "." "/etc/app.conf") "/etc/app.conf")))
+
+(ert-deftest devops--join-target-home-path-test ()
+  "A \"~\" :tangle path is the home directory on the target's machine."
+  (should (equal (devops--join-target "/ssh:host:" "~/foo.txt")
+                 "/ssh:host:~/foo.txt"))
+  ;; Not "/ssh:host:/opt/app/~/foo.txt", which names a directory called "~".
+  (should (equal (devops--join-target "/ssh:host:/opt/app" "~/foo.txt")
+                 "/ssh:host:~/foo.txt"))
+  (should (equal (devops--join-target "/ssh:host:/opt/app" "~admin/foo.txt")
+                 "/ssh:host:~admin/foo.txt"))
+  (should (equal (devops--join-target "/srv/app/" "~/foo.txt") "~/foo.txt")))
 
 ;;; Tangle-path rewriting
 
@@ -188,6 +233,73 @@ The directory is removed afterwards."
     (should (search-forward ":tangle ./foo.txt" nil t))
     (goto-char (point-min))
     (should-not (search-forward ":tangle .foo.txt" nil t))))
+
+(ert-deftest devops--rewrite-tangle-paths-subdirectory-test ()
+  "A relative subdirectory is prefixed, spelled with or without \"./\"."
+  (devops-test--with-org
+      (concat "* Heading\n\n"
+              "#+begin_src sh :tangle dir/foo.txt\n"
+              "echo hi\n#+end_src\n\n"
+              "#+begin_src sh :tangle ./dir/bar.txt\n"
+              "echo hi\n#+end_src\n")
+    (devops--rewrite-tangle-paths "/ssh:host1:")
+    (goto-char (point-min))
+    (should (search-forward ":tangle /ssh:host1:dir/foo.txt" nil t))
+    (goto-char (point-min))
+    (should (search-forward ":tangle /ssh:host1:dir/bar.txt" nil t))))
+
+(ert-deftest devops--rewrite-tangle-paths-absolute-test ()
+  "An absolute path is absolute on the target, not nested under it."
+  (devops-test--with-org
+      (concat "* Heading\n\n"
+              "#+begin_src sh :tangle /etc/app.conf\n"
+              "key=val\n#+end_src\n")
+    (devops--rewrite-tangle-paths "/ssh:host1:/opt/app")
+    (goto-char (point-min))
+    (should (search-forward ":tangle /ssh:host1:/etc/app.conf" nil t))
+    (goto-char (point-min))
+    (should-not (search-forward "/opt/app/etc" nil t))))
+
+(ert-deftest devops--rewrite-tangle-paths-target-nil-test ()
+  "A block that opted out with `:target nil' keeps its own local path."
+  (devops-test--with-org
+      (concat "* Heading\n\n"
+              "#+begin_src sh :tangle foo.txt\n"
+              "echo hi\n#+end_src\n\n"
+              "#+begin_src sh :target nil :tangle bar.txt\n"
+              "echo hi\n#+end_src\n")
+    (devops--rewrite-tangle-paths "/ssh:host1:" "/home/me/notes/")
+    (goto-char (point-min))
+    (should (search-forward ":tangle /ssh:host1:foo.txt" nil t))
+    ;; Relative, so expanded against LOCAL-DIR rather than the temp buffer.
+    (goto-char (point-min))
+    (should (search-forward ":tangle /home/me/notes/bar.txt" nil t))
+    (goto-char (point-min))
+    (should-not (search-forward ":tangle /ssh:host1:bar.txt" nil t))))
+
+(ert-deftest devops--rewrite-tangle-paths-target-nil-absolute-test ()
+  "An opted-out block's absolute path is left as it stands."
+  (devops-test--with-org
+      (concat "* Heading\n\n"
+              "#+begin_src sh :target nil :tangle ~/bar.txt\n"
+              "echo hi\n#+end_src\n")
+    (devops--rewrite-tangle-paths "/ssh:host1:" "/home/me/notes/")
+    (goto-char (point-min))
+    (should (search-forward (concat ":tangle " (expand-file-name "~/bar.txt"))
+                            nil t))))
+
+(ert-deftest devops--rewrite-tangle-paths-target-nil-from-property-test ()
+  "A `:target nil' inherited from a `header-args' property opts out too."
+  (devops-test--with-org
+      (concat "* Heading\n"
+              ":PROPERTIES:\n"
+              ":header-args: :target nil\n"
+              ":END:\n\n"
+              "#+begin_src sh :tangle bar.txt\n"
+              "echo hi\n#+end_src\n")
+    (devops--rewrite-tangle-paths "/ssh:host1:" "/home/me/notes/")
+    (goto-char (point-min))
+    (should (search-forward ":tangle /home/me/notes/bar.txt" nil t))))
 
 (ert-deftest devops--rewrite-tangle-paths-skip-yes-test ()
   "Don't rewrite :tangle yes (the default-filename flag, not a path)."
@@ -437,6 +549,107 @@ targets land next to the org file rather than in the system temp dir."
         (should (equal (file-name-as-directory (file-truename (org-trim result)))
                        (file-name-as-directory (file-truename target))))))))
 
+(ert-deftest devops-execute-src-block-explicit-dir-wins-test ()
+  "An explicit :dir on the block overrides the heading's target."
+  (devops-test--with-local-target target
+    (devops-test--with-local-target other
+      (devops-test--with-org
+          (format (concat "#+TARGET: %s (local)\n\n"
+                          "* Run\t\t:local:\n\n"
+                          "#+begin_src sh :dir %s\npwd\n#+end_src\n")
+                  target other)
+        (goto-char (point-min))
+        (re-search-forward "begin_src")
+        (let* ((org-confirm-babel-evaluate nil)
+               (result (org-babel-execute-src-block)))
+          (should (equal (file-name-as-directory (file-truename (org-trim result)))
+                         (file-name-as-directory (file-truename other)))))))))
+
+(ert-deftest devops-execute-src-block-explicit-dir-skips-prompt-test ()
+  "With an explicit :dir, multiple target tags do not prompt for a target."
+  (devops-test--with-local-target other
+    (devops-test--with-org
+        (format (concat "#+TARGET: /srv/one/ (t1)\n"
+                        "#+TARGET: /srv/two/ (t2)\n\n"
+                        "* Run\t\t:t1:t2:\n\n"
+                        "#+begin_src sh :dir %s\npwd\n#+end_src\n")
+                other)
+      (goto-char (point-min))
+      (re-search-forward "begin_src")
+      (let ((org-confirm-babel-evaluate nil))
+        (cl-letf (((symbol-function 'completing-read)
+                   (lambda (&rest _) (error "Should not prompt for a target"))))
+          (should (equal (file-name-as-directory
+                          (file-truename (org-trim (org-babel-execute-src-block))))
+                         (file-name-as-directory (file-truename other)))))))))
+
+(ert-deftest devops-execute-src-block-target-nil-runs-locally-test ()
+  "`:target nil' opts the block out of the heading's target."
+  (devops-test--with-local-target target
+    (devops-test--with-org
+        (format (concat "#+TARGET: %s (local)\n\n"
+                        "* Run\t\t:local:\n\n"
+                        "#+begin_src sh :target nil\npwd\n#+end_src\n")
+                target)
+      (goto-char (point-min))
+      (re-search-forward "begin_src")
+      (let* ((here default-directory)
+             (org-confirm-babel-evaluate nil)
+             (result (file-name-as-directory
+                      (file-truename (org-trim (org-babel-execute-src-block))))))
+        (should (equal result (file-name-as-directory (file-truename here))))
+        (should-not (equal result
+                           (file-name-as-directory (file-truename target))))))))
+
+(ert-deftest devops-execute-src-block-target-nil-skips-prompt-test ()
+  "With `:target nil', multiple target tags do not prompt for a target."
+  (devops-test--with-org
+      (concat "#+TARGET: /srv/one/ (t1)\n"
+              "#+TARGET: /srv/two/ (t2)\n\n"
+              "* Run\t\t:t1:t2:\n\n"
+              "#+begin_src sh :target nil\npwd\n#+end_src\n")
+    (goto-char (point-min))
+    (re-search-forward "begin_src")
+    (let ((here default-directory)
+          (org-confirm-babel-evaluate nil))
+      (cl-letf (((symbol-function 'completing-read)
+                 (lambda (&rest _) (error "Should not prompt for a target"))))
+        (should (equal (file-name-as-directory
+                        (file-truename (org-trim (org-babel-execute-src-block))))
+                       (file-name-as-directory (file-truename here))))))))
+
+(ert-deftest devops-execute-src-block-target-nil-from-property-test ()
+  "`:target nil' works when inherited from a `header-args' property."
+  (devops-test--with-local-target target
+    (devops-test--with-org
+        (format (concat "#+TARGET: %s (local)\n\n"
+                        "* Run\t\t:local:\n"
+                        ":PROPERTIES:\n"
+                        ":header-args: :target nil\n"
+                        ":END:\n\n"
+                        "#+begin_src sh\npwd\n#+end_src\n")
+                target)
+      (goto-char (point-min))
+      (re-search-forward "begin_src")
+      (let ((here default-directory)
+            (org-confirm-babel-evaluate nil))
+        (should (equal (file-name-as-directory
+                        (file-truename (org-trim (org-babel-execute-src-block))))
+                       (file-name-as-directory (file-truename here))))))))
+
+(ert-deftest devops-execute-src-block-unknown-target-errors-test ()
+  "An unrecognized :target value errors rather than falling back to the tag."
+  (devops-test--with-local-target target
+    (devops-test--with-org
+        (format (concat "#+TARGET: %s (local)\n\n"
+                        "* Run\t\t:local:\n\n"
+                        "#+begin_src sh :target elsewhere\npwd\n#+end_src\n")
+                target)
+      (goto-char (point-min))
+      (re-search-forward "begin_src")
+      (let ((org-confirm-babel-evaluate nil))
+        (should-error (org-babel-execute-src-block) :type 'user-error)))))
+
 ;;; Multi-target tangling (README: same file to several servers)
 
 (ert-deftest devops-tangle-multi-target-test ()
@@ -454,6 +667,70 @@ targets land next to the org file rather than in the system temp dir."
                                        (list "s2" t2 1))))
           (should (file-exists-p (concat t1 "foo.txt")))
           (should (file-exists-p (concat t2 "foo.txt"))))))))
+
+(ert-deftest devops-tangle-absolute-path-escapes-target-dir-test ()
+  "An absolute :tangle path is not nested under a directory target."
+  (devops-test--with-local-target target
+    (devops-test--with-local-target elsewhere
+      (devops-test--with-org
+          (format (concat "#+TARGET: %s (local)\n\n"
+                          "* Deploy\t\t:local:\n\n"
+                          "#+begin_src txt :tangle %sapp.conf\n"
+                          "key=val\n#+end_src\n")
+                  target elsewhere)
+        (devops-tangle-headline (current-buffer) "Deploy")
+        (should (file-exists-p (concat elsewhere "app.conf")))
+        ;; Not TARGET + ELSEWHERE glued together.
+        (should-not (file-exists-p
+                     (concat target (substring elsewhere 1) "app.conf")))))))
+
+(ert-deftest devops-tangle-subdirectory-test ()
+  "A relative subdirectory lands under the target, spelled either way."
+  (devops-test--with-local-target target
+    (devops-test--with-org
+        (format (concat "#+TARGET: %s (local)\n\n"
+                        "* Deploy\t\t:local:\n\n"
+                        "#+begin_src txt :tangle conf/a.txt :mkdirp yes\n"
+                        "a\n#+end_src\n\n"
+                        "#+begin_src txt :tangle ./conf/b.txt :mkdirp yes\n"
+                        "b\n#+end_src\n")
+                target)
+      (devops-tangle-headline (current-buffer) "Deploy")
+      (should (file-exists-p (concat target "conf/a.txt")))
+      (should (file-exists-p (concat target "conf/b.txt"))))))
+
+(ert-deftest devops-tangle-target-nil-tangles-locally-test ()
+  "`:target nil' tangles beside the org file, leaving the target alone."
+  (devops-test--with-local-target target
+    (devops-test--with-local-target here
+      (devops-test--with-org
+          (format (concat "#+TARGET: %s (local)\n\n"
+                          "* Deploy\t\t:local:\n\n"
+                          "#+begin_src txt :tangle remote.txt\n"
+                          "to the server\n#+end_src\n\n"
+                          "#+begin_src txt :target nil :tangle local.txt\n"
+                          "stays here\n#+end_src\n")
+                  target)
+        (let ((default-directory here))
+          (devops-tangle-headline (current-buffer) "Deploy"))
+        (should (file-exists-p (concat target "remote.txt")))
+        (should (file-exists-p (concat here "local.txt")))
+        ;; The opted-out block is not pushed to the target...
+        (should-not (file-exists-p (concat target "local.txt")))
+        ;; ...and the targeted one is not left behind locally.
+        (should-not (file-exists-p (concat here "remote.txt")))))))
+
+(ert-deftest devops-tangle-paths-target-nil-test ()
+  "`devops--tangle-paths' names one local file for an opted-out block."
+  (devops-test--with-org
+      (concat "#+TARGET: /srv/one/ (t1)\n"
+              "#+TARGET: /srv/two/ (t2)\n\n"
+              "* Deploy\t\t:t1:t2:\n\n"
+              "#+begin_src txt :target nil :tangle foo.txt\nhi\n#+end_src\n")
+    (goto-char (point-min))
+    (re-search-forward "begin_src")
+    (should (equal (devops--tangle-paths)
+                   (list (expand-file-name "foo.txt"))))))
 
 ;;; Noweb (README: secrets via <<NAME()>>, per-server blocks)
 
@@ -616,6 +893,47 @@ afterwards), in an org buffer visiting the formatted text."
       (should (search-forward ":tangle no" nil t))
       (goto-char (point-min))
       (should-not (search-forward ":tangle /ssh:other:" nil t)))))
+
+(ert-deftest devops--drift-rewrite-tangle-paths-target-nil-test ()
+  "An opted-out block is left out of the mapping and neutralized."
+  (devops-test--with-org
+      (concat "* Heading\n\n"
+              "#+begin_src sh :tangle ~/foo.txt\n"
+              "echo hi\n#+end_src\n\n"
+              "#+begin_src sh :target nil :tangle ~/bar.txt\n"
+              "echo hi\n#+end_src\n")
+    (let ((mapping (devops--drift-rewrite-tangle-paths "/ssh:host1:" "/tmp/root")))
+      (should (= 1 (length mapping)))
+      (should (equal (car mapping)
+                     '("~/foo.txt" "/tmp/root/home/foo.txt"
+                       "/ssh:host1:~/foo.txt")))
+      ;; Neutralized, not merely unmapped: a drift check must not write
+      ;; the block's own path either.
+      (goto-char (point-min))
+      (should (search-forward ":tangle no" nil t))
+      (goto-char (point-min))
+      (should-not (search-forward ":tangle ~/bar.txt" nil t)))))
+
+(ert-deftest devops-drift-check-target-nil-skipped-test ()
+  "A block that opted out of the target is not drift-checked."
+  (devops-test--with-local-target target
+    (devops-test--with-local-target here
+      (devops-test--with-org
+          (format (concat "#+TARGET: %s (local)\n\n"
+                          "* Deploy\t\t:local:\n\n"
+                          "#+begin_src txt :tangle foo.txt\nhello\n#+end_src\n\n"
+                          "#+begin_src txt :target nil :tangle local.txt\n"
+                          "stays here\n#+end_src\n")
+                  target)
+        (let ((default-directory here))
+          (devops-tangle-headline (current-buffer) "Deploy"))
+        (let* ((result (devops--drift-check (current-buffer) t))
+               (entries (cdr result)))
+          (unwind-protect
+              (progn
+                (should (= 1 (length entries)))
+                (should (equal (plist-get (car entries) :path) "foo.txt")))
+            (delete-directory (car result) t)))))))
 
 (ert-deftest devops-drift-check-in-sync-test ()
   "A target that matches its tangled output reports `same'."

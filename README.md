@@ -51,7 +51,7 @@ api-key: <<API-KEY()>>
 
 ```
 
-(Note the parenteses in `API-KEY()`).
+(Note the parentheses in `API-KEY()`).
 
 ## Limitations
 
@@ -124,7 +124,7 @@ parallel, though I haven't identified yet how to best do this.
 
 ### Tangling
 
-Tangling obeys the same target tags. This will create `~/foo.txt` in `server1`:
+Tangling obeys the same targets. This will create `~/foo.txt` in `server1`:
 
 ```
 * Upload a file to server1                              :server1:
@@ -144,6 +144,50 @@ You can tangle a file to multiple servers. This will create `~/foo.txt` on both
 ... contents of foo.xt ...
 #+END_SRC
 ```
+
+Given
+
+`#+TARGET: /ssh:example1.com:/opt/app (server1)`,
+
+`:tangle` resolves to a path within the host:
+
+| `:tangle`        | resolves to                               |
+|------------------|-------------------------------------------|
+| `foo.txt`        | `/ssh:example1.com:/opt/app/foo.txt`      |
+| `conf/foo.txt`   | `/ssh:example1.com:/opt/app/conf/foo.txt` |
+| `./conf/foo.txt` | same as above — the `./` is dropped       |
+| `/etc/foo.txt`   | `/ssh:example1.com:/etc/foo.txt`          |
+| `~/foo.txt`      | `/ssh:example1.com:~/foo.txt`             |
+
+## Disabling with :target nil
+
+Sometimes you may want to "turn off" the target for a single block.
+
+As an example, let's say we have a container `TARGET`:
+
+```
+#+TARGET: /ssh:server.com|podman:my-container: (container)
+```
+
+We can filter the results locally by adding `target: nil` to a second block:
+
+```
+* Service status                                      :container:
+
+#+NAME: status
+#+BEGIN_SRC sh
+some-cli status --json
+#+END_SRC
+
+#+BEGIN_SRC sh :stdin status :target nil
+jq -r '.services
+  | to_entries[]
+  | select(.value.state != "running")
+  | "\(.key)\t\(.value.state)\t\(.value.health)"'
+#+END_SRC
+```
+
+This will work even if the `jq` command is not installed in the container :)
 
 ## Drift detection
 
