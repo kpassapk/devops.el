@@ -125,6 +125,28 @@ a server."
     (or (member (cdr cell) devops--target-none-values)
         (user-error "Unknown :target value %S (expected nil)" (cdr cell)))))
 
+(defun devops--target-opted-out-regions ()
+  "Return (BEG . END) for each src block that opts out of its heading's target.
+Covers the accessible portion of the buffer, so a narrowed subtree yields
+only its own blocks.  Header arguments are read with the same merge rules
+as execution, so a `:target nil' inherited from a `header-args' property
+counts.  The regions let a textual :tangle rewrite tell an opted-out
+block's header from any other."
+  (org-element-map (org-element-parse-buffer 'element) 'src-block
+    (lambda (el)
+      (save-excursion
+        (goto-char (org-element-property :post-affiliated el))
+        (when (devops--target-opted-out-p nil (devops--block-params nil))
+          (cons (org-element-property :begin el)
+                (org-element-property :end el)))))))
+
+(defun devops--in-regions-p (pos regions)
+  "Return non-nil if POS falls inside one of REGIONS, a list of (BEG . END)."
+  (catch 'hit
+    (dolist (region regions)
+      (when (and (>= pos (car region)) (< pos (cdr region)))
+        (throw 'hit t)))))
+
 (defun devops--inject-header-args-from-tags (orig-fn &optional arg info params executor-type)
   "Advise org-babel-execute-src-block to inject :dir from #+TARGET tags.
 An explicit :dir wins: the heading's target is neither resolved nor
@@ -159,40 +181,77 @@ Blocks matching other tags get renamed to avoid resolution."
              (concat prefix basename)
            (concat prefix "_devops-excluded-" basename "-" block-tag)))))))
 
+(defun devops--split-target (target)
+  "Split TARGET into a (PREFIX . ROOT) cons.
+PREFIX is the TRAMP method/host header and ROOT the directory part:
+\"/ssh:host:\" splits into (\"/ssh:host:\" . \"\"), \"/ssh:host:/etc\" into
+\(\"/ssh:host:\" . \"/etc\"), and a local \"/srv/app\" into
+\(\"\" . \"/srv/app\").  The split goes through `tramp-dissect-file-name'
+rather than `file-remote-p', which reports only the last hop of a
+multi-hop target like \"/ssh:host|podman:box:\"."
+  (if (tramp-tramp-file-p target)
+      (let ((root (tramp-file-name-localname (tramp-dissect-file-name target))))
+        (cons (substring target 0 (- (length target) (length root))) root))
+    (cons "" target)))
+
 (defun devops--join-target (target path)
-  "Join TARGET prefix onto a relative :tangle PATH with one separator.
-TARGET is a #+TARGET value (a directory or TRAMP prefix); PATH is a
-relative :tangle filename.  A \"/\" is inserted between them unless TARGET
-already ends in \"/\" or \":\".  A trailing \":\" marks a TRAMP method/host
-prefix (e.g. \"/ssh:host:\") whose bare form already means the remote
-login directory, so no separator is added there.
+  "Join TARGET onto a :tangle PATH, reading PATH as its machine would.
+TARGET is a #+TARGET value: a TRAMP prefix, a directory, or both.
 
-This keeps awkward targets honest: \".\" yields \"./PATH\" (not the hidden
-file \".PATH\") and \"/srv/app\" yields \"/srv/app/PATH\" (not
-\"/srv/appPATH\")."
-  (if (or (string-suffix-p "/" target)
-          (string-suffix-p ":" target))
-      (concat target path)
-    (concat target "/" path)))
+A relative PATH lands under TARGET's directory, with exactly one
+separator between them.  This keeps awkward targets honest: \".\" yields
+\"./PATH\" (not the hidden file \".PATH\") and \"/srv/app\" yields
+\"/srv/app/PATH\" (not \"/srv/appPATH\").  A leading \"./\" is dropped, so
+\"./dir/f\" and \"dir/f\" name one file rather than two spellings of it.
 
-(defun devops--rewrite-tangle-paths (tramp-prefix)
+An absolute PATH (\"/etc/f\") or a home-relative one (\"~/f\") is already
+absolute on TARGET's machine, so it replaces TARGET's directory and keeps
+only its TRAMP prefix: at \"/ssh:host:/opt\", \"/etc/f\" is
+\"/ssh:host:/etc/f\", not \"/ssh:host:/opt/etc/f\".  \"~\" is left for TRAMP
+to expand when the file is written, on the machine it belongs to."
+  (let* ((split (devops--split-target target))
+         (prefix (car split))
+         (root (cdr split))
+         (path (if (string-prefix-p "./" path) (substring path 2) path)))
+    (cond
+     ((or (string-prefix-p "/" path)
+          (string-prefix-p "~" path))
+      (concat prefix path))
+     ((or (string= "" root)
+          (string-suffix-p "/" root))
+      (concat prefix root path))
+     (t
+      (concat prefix root "/" path)))))
+
+(defun devops--rewrite-tangle-paths (tramp-prefix &optional local-dir)
   "Rewrite :tangle header args in buffer to include TRAMP-PREFIX.
 Modifies buffer text.  Skips :tangle no, :tangle yes, and paths already
-containing a TRAMP prefix."
-  (save-excursion
-    (goto-char (point-max))
-    (while (re-search-backward
-            ":tangle +\\([^ \t\n]+\\)"
-            nil t)
-      (let ((path (match-string 1)))
-        (when (and (not (member path '("no" "yes")))
-                   (not (tramp-tramp-file-p path)))
-          (replace-match (concat ":tangle "
-                                 (devops--join-target tramp-prefix path)))
-          ;; Step before the rewrite so the backward search keeps making
-          ;; progress.  Otherwise a local (non-TRAMP) prefix would leave the
-          ;; rewritten path matchable and we'd re-prefix it forever.
-          (goto-char (match-beginning 0)))))))
+containing a TRAMP prefix.
+
+A block that opted out with `:target nil' keeps its own path: the target
+is off for tangling exactly as it is for execution, so the file lands
+locally.  Such a relative path is expanded against LOCAL-DIR, since
+tangling runs in a temp buffer whose directory is the system temp dir and
+`org-babel-tangle' would otherwise resolve it there."
+  (let ((opted-out (devops--target-opted-out-regions)))
+    (save-excursion
+      (goto-char (point-max))
+      (while (re-search-backward
+              ":tangle +\\([^ \t\n]+\\)"
+              nil t)
+        (let ((path (match-string 1))
+              (beg (match-beginning 0)))
+          (when (and (not (member path '("no" "yes")))
+                     (not (tramp-tramp-file-p path)))
+            (replace-match
+             (concat ":tangle "
+                     (if (devops--in-regions-p beg opted-out)
+                         (if local-dir (expand-file-name path local-dir) path)
+                       (devops--join-target tramp-prefix path))))
+            ;; Step before the rewrite so the backward search keeps making
+            ;; progress.  Otherwise a local (non-TRAMP) prefix would leave the
+            ;; rewritten path matchable and we'd re-prefix it forever.
+            (goto-char beg)))))))
 
 (defun devops--tangle-heading (source-buf heading-pos tag target)
   "Tangle subtree at HEADING-POS from SOURCE-BUF to TARGET.
@@ -203,11 +262,12 @@ A relative local TARGET (e.g. \".\" or \"../foo\") is expanded against
 SOURCE-BUF's directory before tangling.  Tangling runs in a temp buffer
 whose file lives in the system temp dir, so without this a relative
 target would silently resolve against the temp dir instead of the org
-file.  TRAMP targets are left untouched."
-  (let* ((target (if (tramp-tramp-file-p target)
+file.  TRAMP targets are left untouched.  Blocks that opted out of the
+target with `:target nil' resolve against that same directory."
+  (let* ((local-dir (buffer-local-value 'default-directory source-buf))
+         (target (if (tramp-tramp-file-p target)
                      target
-                   (expand-file-name
-                    target (buffer-local-value 'default-directory source-buf))))
+                   (expand-file-name target local-dir)))
          (tmp-file (make-temp-file "devops-tangle-" nil ".org"))
 	 (tmp-buf  (find-file-noselect tmp-file)))
     (unwind-protect
@@ -219,7 +279,7 @@ file.  TRAMP targets are left untouched."
             (org-narrow-to-subtree)
             (let* ((files (progn
                             (devops--specialize-noweb-blocks tag)
-                            (devops--rewrite-tangle-paths target)
+                            (devops--rewrite-tangle-paths target local-dir)
                             (org-babel-tangle))))
               (widen)
               (when files (length files)))))
@@ -335,18 +395,23 @@ argument.  SOURCE-BUF must be an org-mode buffer."
     (devops--tangle-spec-execute source-buf (devops--tangle-spec t))))
 
 (defun devops--tangle-paths ()
-  "Return a list of file paths expanded with each target"
-  (let* ((spec (devops--tangle-spec))
-         (params (nth 2 (org-babel-get-src-block-info)))
+  "Return a list of file paths expanded with each target.
+A block that opted out with `:target nil' names one local file, resolved
+like any other path in this buffer, rather than one file per target."
+  (let* ((params (nth 2 (org-babel-get-src-block-info)))
          (path (cdr (assq :tangle params))))
-    (if (or (not path)
-            (member path '("no" "yes"))
-            (tramp-tramp-file-p path))
-        nil
+    (cond
+     ((or (not path)
+          (member path '("no" "yes"))
+          (tramp-tramp-file-p path))
+      nil)
+     ((devops--target-opted-out-p nil params)
+      (list (expand-file-name path)))
+     (t
       (mapcar (lambda (entry)
                 (let ((target (plist-get entry :target)))
                   (devops--join-target target path)))
-              spec))))
+              (devops--tangle-spec))))))
 
 (defun devops-visit-file (&optional arg)
   "Go to file at of source code block at point.

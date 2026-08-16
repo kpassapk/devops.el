@@ -64,8 +64,16 @@ original :tangle value, LOCAL the rewritten local file and REMOTE the
 file the path denotes at TARGET.  A PATH that is already a TRAMP path
 keeps itself as REMOTE but is still redirected to LOCAL-ROOT: a drift
 check must never write to a remote.  Skips :tangle no and :tangle yes.
+
+A block that opted out with `:target nil' has no target to be compared
+against, so it is left out of the mapping and its header is neutralized
+to :tangle no.  Neutralizing it matters as much as omitting it: the
+block's own path is a real local file, and tangling it here would make a
+read-only check write to the user's filesystem.
+
 Modifies buffer text."
-  (let (mapping)
+  (let ((opted-out (devops--target-opted-out-regions))
+        mapping)
     (save-excursion
       (goto-char (point-max))
       (while (re-search-backward ":tangle +\\([^ \t\n]+\\)" nil t)
@@ -76,18 +84,23 @@ Modifies buffer text."
               (end (match-end 0))
               (path (match-string 1)))
           (unless (member path '("no" "yes"))
-            (let ((remote (if (tramp-tramp-file-p path)
-                              path
-                            (devops--join-target target path)))
-                  (local (expand-file-name
-                          (devops--drift-localize-path path) local-root)))
-              (delete-region beg end)
-              (goto-char beg)
-              (insert ":tangle " local)
-              ;; Step before the rewrite so the backward search keeps
-              ;; making progress (the rewritten path matches the regexp).
-              (goto-char beg)
-              (push (list path local remote) mapping))))))
+            (if (devops--in-regions-p beg opted-out)
+                (progn
+                  (delete-region beg end)
+                  (goto-char beg)
+                  (insert ":tangle no"))
+              (let ((remote (if (tramp-tramp-file-p path)
+                                path
+                              (devops--join-target target path)))
+                    (local (expand-file-name
+                            (devops--drift-localize-path path) local-root)))
+                (delete-region beg end)
+                (goto-char beg)
+                (insert ":tangle " local)
+                (push (list path local remote) mapping)))
+            ;; Step before the rewrite so the backward search keeps
+            ;; making progress (the rewritten path matches the regexp).
+            (goto-char beg)))))
     mapping))
 
 (defun devops--drift-tangle-heading (source-buf heading-pos tag target local-root)

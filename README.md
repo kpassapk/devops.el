@@ -150,6 +150,9 @@ jq -r '.services | keys'
 This will work even if the `jq` command was not installed in the container, since we added
 `:target nil` to the second block.
 
+`:target nil` tangles locally. See
+[Tangling with :target nil](#tangling-with-target-nil).
+
 ### Tangling
 
 Tangling obeys the same targets. This will create `~/foo.txt` in `server1`:
@@ -172,6 +175,44 @@ You can tangle a file to multiple servers. This will create `~/foo.txt` on both
 ... contents of foo.xt ...
 #+END_SRC
 ```
+
+### How :tangle paths are read
+
+`#+TARGET: /ssh:example1.com:/opt/app (server1)`, `:tangle` resolves
+as follows:
+
+| `:tangle`        | resolves to                               |
+|------------------|-------------------------------------------|
+| `foo.txt`        | `/ssh:example1.com:/opt/app/foo.txt`      |
+| `conf/foo.txt`   | `/ssh:example1.com:/opt/app/conf/foo.txt` |
+| `./conf/foo.txt` | same as above — the `./` is dropped       |
+| `/etc/foo.txt`   | `/ssh:example1.com:/etc/foo.txt`          |
+| `~/foo.txt`      | `/ssh:example1.com:~/foo.txt`             |
+
+Absolute and `~` paths are already absolute on the target's machine, so they
+replace the target's directory and keep only its host.
+
+For a local directory target such as `#+TARGET: /srv/app/ (staging)` there is
+no host to keep, so `:tangle /etc/foo.txt` writes to `/etc/foo.txt` — outside
+the target directory.
+
+### Tangling with :target nil
+
+`:target nil` behaves like `org-babel-tangle`.
+
+```
+* Deploy                                                :server1:
+
+#+BEGIN_SRC conf :tangle app.conf
+... goes to server1 ...
+#+END_SRC
+
+#+BEGIN_SRC yaml :target nil :tangle inventory.yaml
+... stays next to the org file ...
+#+END_SRC
+```
+
+Use `:tangle no` if you want a block not to tangle at all. 
 
 ## Drift detection
 
