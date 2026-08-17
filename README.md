@@ -59,14 +59,16 @@ There are some shortcomings and annoyances, however:
 
 1. Long-running commands (like `apt-get update`) can lock up emacs for an extended period of time. In devops workflows, most of the work is remote, so the experience is... choppy. Even worse, if a command asks for input your emacs might become unresponsive.
 
-2. When describing an actual production environment, it's easy to end up with duplicate `/ssh:someuser@someserver:somedirectory/...` `:dir` properties all over the file. This is extremely difficult to scan.
+2. When describing an actual production environment, it's easy to end up with duplicate `/ssh:someuser@someserver:somedirectory/...` `:dir` properties all over the file. This is difficult to scan.
 
 3. Each source block can only have a single `:dir`. This makes the following typical use cases difficult:
 
-  - Uploading the same content on multiple servers
+  - Uploading the same content to multiple servers
   - Running the same command on multiple servers
 
-4. Tangling socpe is either too small or to wide. The `org-babel-tangle` function tangles the entire buffer by default, or alternatively a single source code block. Tangling an entire buffer might be risky, and tangling a single block gets very annoying.
+4. Tangling ignores `:dir`. If you are uploading a file and then running a server command, now the server needs to go in two places. (`:dir` and `:tangle`)
+
+5. tangling scope is either too small or to wide. The `org-babel-tangle` function tangles the entire buffer by default, or alternatively a single source code block. Tangling an entire buffer might be risky, and tangling a single block gets very annoying.
 
 This library provides functionality to better support devops-like workflows. It does this by applying some conventions on top of org mode.
 
@@ -249,7 +251,7 @@ injects these `dir`, `session` and `async` headers:
 #+end_src
 ```
 
-(Only works iwth `:results output`. You will probably want to set this at top of file.
+(Only works with `:results output` I think. You will probably want to set this at top of file.
 See [](examples/1_commands.org))
 
 This is off by default because it makes blocks stateful. Commands like `cd` now survive 
@@ -262,7 +264,7 @@ from one block to the next. To enable, set
 Session names come from `devops-session-name-function`, which defaults to
 `devops:<tag>`. A session name is a buffer name in a single global namespace, so
 if two org files use the same tag for different hosts, set this to a function
-that also folds in the target or the buffer name.
+that also folds in the project, target or buffer name.
 
 ### Terminal DWIM command
 
