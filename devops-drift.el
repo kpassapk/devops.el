@@ -1,6 +1,9 @@
-;; devops-drift.el - Drift detection for devops.el -*- lexical-binding: t; -*-
+;;; devops-drift.el --- Drift detection for devops.el -*- lexical-binding: t; -*-
 
 ;; Copyright (C) 2026 Kyle S Passarelli
+
+;; Author: Kyle S Passarelli <kyle.passarelli@gmail.com>
+;; URL: https://github.com/kpassapk/devops.el
 
 ;; This package is free software; you can redistribute it and/or modify
 ;; it under the terms of the GNU General Public License as published by
@@ -546,3 +549,5 @@ With prefix ARG, check every target-tagged heading in the buffer."
     (pop-to-buffer buf)))
 
 (provide 'devops-drift)
+
+;;; devops-drift.el ends here

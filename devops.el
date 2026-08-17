@@ -1,6 +1,13 @@
-;; devops.el - Development target -*- lexical-binding: t; -*-
+;;; devops.el --- Infrastructure as an org file -*- lexical-binding: t; -*-
 
 ;; Copyright (C) 2026 Kyle S Passarelli
+
+;; Author: Kyle S Passarelli <kyle.passarelli@gmail.com>
+;; Maintainer: Kyle S Passarelli <kyle.passarelli@gmail.com>
+;; URL: https://github.com/kpassapk/devops.el
+;; Version: 0.1.0
+;; Package-Requires: ((emacs "29.1"))
+;; Keywords: tools, processes, outlines
 
 ;; This package is free software; you can redistribute it and/or modify
 ;; it under the terms of the GNU General Public License as published by
@@ -19,6 +26,14 @@
 ;;
 ;; `devops.el' offers utilities for running commands on local and remote
 ;; machines using org mode.
+;;
+;; The package itself needs nothing newer than the org bundled with Emacs
+;; 29.  `devops-enable-session-async' is the exception: running shell
+;; blocks asynchronously needs the `:async' support `ob-shell' gained in
+;; Org 9.7 (Emacs 30.1), and turns itself off under an older org rather
+;; than putting blocks in a session it cannot drive.  Hence no (org "9.7")
+;; in Package-Requires: an optional feature should not force everyone to
+;; replace their built-in org.
 
 ;;; Code:
 
@@ -50,7 +65,11 @@ an activated virtualenv and `ssh-agent' survive from one block to the
 next, which is useful but costs idempotency.  A block that passed in a
 dirty session may fail in a fresh one, so prefer blocks that do not
 depend on the ones above them, and use `devops-restart-session' to get
-back to a known state."
+back to a known state.
+
+Shell blocks need Org 9.7 or newer, where `ob-shell' learned `:async';
+under an older org this option leaves them alone rather than putting
+them in a session it cannot run asynchronously."
   :type 'boolean
   :group 'devops)
 
@@ -262,12 +281,26 @@ worth avoiding."
              (let ((own (devops--user-header-args lang)))
                (or (null own) (assq :session own)))))))
 
+(defun devops--lang-async-p (lang)
+  "Non-nil when org can evaluate LANG asynchronously in a session.
+`ob-shell' gained `:async' in Org 9.7.  On older org the header argument
+is not merely unsupported but silently ignored, and the block runs
+synchronously in the comint session — worse than no session at all,
+since a command that asks a question then blocks emacs inside a buffer
+the user never sees.  Probing the feature rather than the org version
+also keeps Emacs 29 working once org is upgraded from ELPA."
+  (if (member lang '("sh" "bash" "shell"))
+      (and (require 'ob-shell nil t)
+           (boundp 'ob-shell-async-indicator))
+    t))
+
 (defun devops--async-session-cells (params block-params lang tag target)
   "Return the :session and :async header cells to inject, or nil.
 PARAMS and BLOCK-PARAMS are as in `devops--header-cell', LANG is the
 block's language, and TAG and TARGET the heading's resolved target.
 Nothing is injected unless `devops-enable-session-async' is on, LANG is
-in `devops-async-session-languages', and we are executing on the user's
+in `devops-async-session-languages' and supported by the running org
+\(see `devops--lang-async-p'), and we are executing on the user's
 behalf rather than under `devops-with-sync'.
 
 What the block already says is left alone, so per-block escape hatches
@@ -276,7 +309,8 @@ heading's session, `:session none' gives it neither a session nor async,
 and `:session other' attaches it to a session of the user's choosing."
   (when (and devops-enable-session-async
              (not devops--inhibit-async)
-             (member lang devops-async-session-languages))
+             (member lang devops-async-session-languages)
+             (devops--lang-async-p lang))
     (let* ((declared (devops--session-declared-p params block-params lang))
            (session (cdr (devops--header-cell :session params block-params))))
       (unless (and declared (equal session "none"))
@@ -726,3 +760,5 @@ In a src block, if the : copies body to clipboard and exports :var env vars."
     (devops--open-terminal-at-dir dir env-vars)))
 
 (provide 'devops)
+
+;;; devops.el ends here

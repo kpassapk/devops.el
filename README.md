@@ -278,16 +278,10 @@ command also pays connection latency, and an unexpected prompt (`sudo`, an ssh
 host key confirmation, `apt` asking a question) leaves emacs waiting on a
 process that will never finish on its own.
 
-Org's answer is `:async` — but only inside a `:session`, since a sessionless
-shell block has no comint buffer to attach a filter to. A target tag is already
-a name for "which machine is this block talking to", so it can name the session
-too:
+Org's 9.7+ added an `:async` option for sessions.  Emacs returns immediately with 
+a placeholder and the output replaces it when the command finishes. 
 
-```elisp
-(setq devops-enable-session-async t)
-```
-
-With that on, a block under a target-tagged heading is executed as if you had
+A block under a target-tagged heading is executed as if you had
 written the session and async headers yourself:
 
 ```
@@ -296,10 +290,27 @@ apt-get update
 #+end_src
 ```
 
-Emacs returns immediately with a placeholder and the output replaces it when
-the command finishes. A command that asks a question no longer hangs emacs
-either: the prompt waits in the session buffer, and `devops-goto-session` takes
-you there to answer it.
+
+
+a name for "which machine is this block talking to", so it can name the session
+too:
+
+```elisp
+(setq devops-enable-session-async t)
+```
+
+A command that asks a question no longer hangs emacs
+either: the prompt waits in the session buffer, and
+`devops-goto-session` takes you there to answer it.
+
+
+Shell blocks need **Org 9.7 or newer**, `:async` —
+Emacs 30.1 and later bundle it, Emacs 29 ships Org 9.6 and needs org from ELPA.
+On an older org the option leaves shell blocks alone rather than putting them in
+a session it cannot drive asynchronously, since a synchronous block in an unseen
+comint buffer hangs worse than one without a session.
+
+
 
 This is off by default because it makes blocks stateful. `cd`, `export`, an
 activated virtualenv and `ssh-agent` now survive from one block to the next
