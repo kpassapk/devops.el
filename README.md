@@ -213,22 +213,20 @@ The following keys are active in the diff report buffer:
 There are also noninteractive variants - `devops-drift-{all|headline|custom-id}`
 for scripting.
 
-## Long runnign commands
+## Long running commands
 
-There are a few options for running background commands in emacs:
+There are seveeral options for running background commands in emacs asynchronously:
 
 1. [ob-async](https://github.com/astahlman/ob-async)
 2. [ob-screen](https://howardism.org/Technical/Emacs/literate-devops.html#fnr.4)
 3. [detached.el](https://sr.ht/~niklaseklund/detached.el)
 
-To avoid any dependencies, 
+To avoid dependnecies, `devops.el` uses built-in features and tries to make them more 
+convenient.
 
 ### Shell async sessions
 
-In Org's 9.7+, `ob-shell` sessions have an `async` option.
-
-Executing source blocks with this option enabled will print a placeholder.
-Once the background command finishes, the placehodler gets replaced with the output.
+In recent org mode versions, (Org 9.7+), executing source blocks with `:session foo :async yes` will print a placeholder. Once the background command finishes, the placehodler gets replaced with the output.
 
 When `devops-enable-session-async` is enabled, blocks are executed as if you had written 
 the `session` and `async` headers yourself. For example,
@@ -268,10 +266,12 @@ that also folds in the target or the buffer name.
 
 ### Terminal DWIM command
 
-I like using a separate terminal to run most commands, instead of emacs.  This package provides a `devops-open-terminal-dwim` command, which opens the current source block in a terminal. (Only `ghostty` supported at the moment, but more terminals planned.)
+I often like using a separate terminal to run most commands, instead of emacs.
+This package provides a `devops-open-terminal-dwim` command, which opens the current source block in a terminal. (Only `ghostty` supported at the moment, but more terminals planned.)
 
-Any `var` references become environment variables loaded into the (usually remote) remote shell. The source block content is copied to the clipboard, so you can do `devops-open-terminal-dwim`, then 
-paste, and you will be running the command at the correct location.
+Any `var` references become environment variables loaded into the (usually remote) 
+shell. The source block content is copied to the clipboard, so you can do 
+`devops-open-terminal-dwim`, then paste, and you will be running the command at the correct location.
 
 ## devops-lob
 
