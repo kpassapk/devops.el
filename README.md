@@ -1,6 +1,6 @@
 # devops.el: Infrastructure as an org file
 
-By following some conventions, this package helps you to manage infrastructure as a set of org files. Infrastructure here may be servers, containers, serverless functions, DNS... up to you.
+By following some conventions, this package helps you to manage infrastructure with org mode. Infrastructure here may be servers, containers, serverless functions, DNS... up to you.
 
 ## Installation
 
@@ -159,17 +159,18 @@ Given
 | `/etc/foo.txt`   | `/ssh:example1.com:/etc/foo.txt`          |
 | `~/foo.txt`      | `/ssh:example1.com:~/foo.txt`             |
 
-## Disabling with :target nil
+### Disabling with :target nil
 
-Sometimes you may want to "turn off" the target for a single block.
+Sometimes you may want to "turn off" the target for a single block. This is useful for locally
+processing the output of the code block.
 
-As an example, let's say we have a container `TARGET`:
+For example, let's say we have a `TARGET` that points to a Podman container in a server:
 
 ```
 #+TARGET: /ssh:server.com|podman:my-container: (container)
 ```
 
-We can filter the results locally by adding `target: nil` to a second block:
+We can chain together a remote command and a local processing step as follows:
 
 ```
 * Service status                                      :container:
@@ -191,21 +192,16 @@ This will work even if the `jq` command is not installed in the container :)
 
 ## Drift detection
 
-Tangling pushes the org file out to its targets. `devops-drift` asks the
-opposite question: does what is on the target still match what the org file
-says? The heading is tangled to a local temp directory first — so noweb, including
-per-server noweb, resolves exactly as a real tangle would — and each tangled file
-is compared byte-for-byte with its counterpart on the target. Nothing is written
-to a target: a drift check is read-only.
-
-`devops-drift` (`C-u` for the whole buffer) shows a `*Drift Report*` buffer, one
-row per file:
+`devops-drift` shows a `*Drift Report*` buffer, telling you whtether code blocks and their 
+tangle targets have identical content. 
 
 ```
   ok       server1   /ssh:example1.com:~/foo.txt
   DRIFT    server1   /ssh:example1.com:~/app.conf
   MISSING  server2   /ssh:example2.com:~/app.conf
 ```
+
+The following keys are active in the diff report buffer:
 
 | Key       | Action                                    |
 |-----------|-------------------------------------------|
@@ -214,155 +210,63 @@ row per file:
 | `d`       | diff them                                 |
 | `g`       | re-run the check                          |
 
-### Checking drift from a source block
+There are also noninteractive variants - `devops-drift-{all|headline|custom-id}`
+for scripting.
 
-The report is a buffer you read and then lose. A check written into the org file
-stays with the notes explaining it, and its result is part of the document:
+## Long runnign commands
 
-```org
-#+begin_src emacs-lisp :results output
-(princ (devops-drift-summary (devops-drift-headline "servers/box.org" "Caddy")))
-#+end_src
+There are a few options for running background commands in emacs:
 
-#+RESULTS:
-: DRIFT    server1   /ssh:example1.com:~/caddy_etc/Caddyfile
-:
-: --- /ssh:example1.com:~/caddy_etc/Caddyfile
-: +++ ~/caddy_etc/Caddyfile (server1)
-: @@ -78,6 +78,11 @@
-: ...
-```
+1. [ob-async](https://github.com/astahlman/ob-async)
+2. [ob-screen](https://howardism.org/Technical/Emacs/literate-devops.html#fnr.4)
+3. [detached.el](https://sr.ht/~niklaseklund/detached.el)
 
-| Function                              | Checks                                          |
-|---------------------------------------|-------------------------------------------------|
-| `(devops-drift-all source)`           | every target-tagged heading                     |
-| `(devops-drift-headline source title)` | the subtree titled `title`                     |
-| `(devops-drift-custom-id source id)`  | the subtree whose `CUSTOM_ID` is `id`           |
+To avoid any dependencies, 
 
-`source` is an org buffer or a file name. All three return the same data: one
-alist per tangled file, and no temp directory left behind.
+### Shell async sessions
 
-| Key       | Value                                                        |
-|-----------|--------------------------------------------------------------|
-| `:status` | `:same`, `:drift`, `:missing` (no file there) or `:error`     |
-| `:tag`    | the target tag this file was tangled for                      |
-| `:path`   | the block's `:tangle` value                                   |
-| `:remote` | where that path lands on the target                           |
-| `:target` | the `#+TARGET` value                                          |
-| `:detail` | the error message, for `:error`                               |
-| `:diff`   | unified diff, target first, for `:drift`                      |
+In Org's 9.7+, `ob-shell` sessions have an `async` option.
 
-`devops-drift-summary` formats that list as the text above,
-`devops-drift-table` as an org table (for `:results table`), and
-`devops-drift-ok-p` reduces it to a boolean — nil for an empty list, since a
-check that compared nothing has shown nothing.
+Executing source blocks with this option enabled will print a placeholder.
+Once the background command finishes, the placehodler gets replaced with the output.
 
-### cljbang.el
-
-If you use [cljbang.el](https://github.com/borkdude/cljbang.el), the drift API returns maps:
-
-```clojure
-(require '[devops-drift :as drift])
-
-(->> (drift/all "servers/box.org")
-     (remove #(= (:status %) :same))
-     (map (fn [{:keys [path status]}] [path status])))
-;; => (["app.conf" :drift])
-```
-
-## Long-running commands
-
-Long commands such as `apt-get update` can lock up emacs. By default a block
-runs in a synchronous subprocess and emacs waits; on a remote target every
-command also pays connection latency, and an unexpected prompt (`sudo`, an ssh
-host key confirmation, `apt` asking a question) leaves emacs waiting on a
-process that will never finish on its own.
-
-Org's 9.7+ added an `:async` option for sessions.  Emacs returns immediately with 
-a placeholder and the output replaces it when the command finishes. 
-
-A block under a target-tagged heading is executed as if you had
-written the session and async headers yourself:
+When `devops-enable-session-async` is enabled, blocks are executed as if you had written 
+the `session` and `async` headers yourself. For example,
 
 ```
-#+begin_src sh :dir /ssh:example.com: :session devops:example :async yes
-apt-get update
+#+TARGET: /ssh:example.com: (example)
+
+* Update packages :example:
+
+#+begin_src sh :results output
+  apt-get update
 #+end_src
 ```
 
+injects these `dir`, `session` and `async` headers:
 
+```
+#+begin_src sh :results output :dir /ssh:example.com: :session devops:example :async yes
+  apt-get update
+#+end_src
+```
 
-a name for "which machine is this block talking to", so it can name the session
-too:
+(Only works iwth `:results output`. You will probably want to set this at top of file.
+See [](examples/1_commands.org))
+
+This is off by default because it makes blocks stateful. Commands like `cd` now survive 
+from one block to the next. To enable, set
 
 ```elisp
 (setq devops-enable-session-async t)
 ```
-
-A command that asks a question no longer hangs emacs
-either: the prompt waits in the session buffer, and
-`devops-goto-session` takes you there to answer it.
-
-
-Shell blocks need **Org 9.7 or newer**, `:async` —
-Emacs 30.1 and later bundle it, Emacs 29 ships Org 9.6 and needs org from ELPA.
-On an older org the option leaves shell blocks alone rather than putting them in
-a session it cannot drive asynchronously, since a synchronous block in an unseen
-comint buffer hangs worse than one without a session.
-
-
-
-This is off by default because it makes blocks stateful. `cd`, `export`, an
-activated virtualenv and `ssh-agent` now survive from one block to the next
-under the same heading, which is useful, but it costs idempotency: blocks become
-order-dependent, and a block that passed in a dirty session may fail in a fresh
-one. Prefer blocks that do not depend on the ones above them, and use
-`devops-restart-session` to get back to a clean shell.
-
-Two tags on the same host get two sessions, because two tags mean two
-directories — a shell session's working directory is fixed when its buffer is
-created, and later blocks do not `cd` to their `:dir`.
-
-| Command                  | What it does                                     |
-|--------------------------|--------------------------------------------------|
-| `devops-goto-session`    | Pop to the heading's session buffer               |
-| `devops-restart-session` | Kill it, so the next block starts a fresh shell   |
-
-### Per-block escape hatches
-
-Whatever the block itself says wins:
-
-| Header          | Effect                                                    |
-|-----------------|-----------------------------------------------------------|
-| `:async no`     | Run this one block synchronously, in the same session      |
-| `:session none` | No session, no async, no state shared with other blocks    |
-| `:session foo`  | Attach to a session of your choosing                       |
-| `:target nil`   | No target, and so no session either                        |
-
-A block that names its own `:dir` is running somewhere devops did not choose,
-so it gets no session either.
-
-Only languages in `devops-async-session-languages` (`sh`, `bash`, `shell`,
-`python`) are affected. `:session` is not a neutral header argument — for
-`emacs-lisp` it means an ielm buffer, and for the non-executable blocks that
-carry `:tangle` it is meaningless — so everything else keeps getting `:dir` and
-nothing more.
-
-Tangling and drift checks stay synchronous, because they need real values: a
-noweb reference that executes a block (`<<SECRET()>>`) would otherwise resolve
-to the placeholder, and the placeholder is what would get written to the file on
-the server. Anything else that reads the return value of
-`org-babel-execute-src-block` should wrap it in `devops-with-sync`.
 
 Session names come from `devops-session-name-function`, which defaults to
 `devops:<tag>`. A session name is a buffer name in a single global namespace, so
 if two org files use the same tag for different hosts, set this to a function
 that also folds in the target or the buffer name.
 
-If you would rather not use sessions at all, there is also
-[ob-async](https://github.com/astahlman/ob-async), and probably others. YMMV.
-
-[ob-screen]: https://howardism.org/Technical/Emacs/literate-devops.html#fnr.4
+### Terminal DWIM command
 
 I like using a separate terminal to run most commands, instead of emacs.  This package provides a `devops-open-terminal-dwim` command, which opens the current source block in a terminal. (Only `ghostty` supported at the moment, but more terminals planned.)
 
@@ -385,30 +289,6 @@ Any project with a `tools.org` at its root can expose named org-babel blocks as 
 ```
 
 With `devops-lob-auto-mode` enabled, opening any file in a project that has `tools.org` automatically loads its named blocks into the org-babel Library of Babel.
-
-### tools.org format
-
-```org
-#+title: Tools
-
-#+name: deploy
-#+begin_src sh :var env="staging"
-./deploy.sh $env
-#+end_src
-
-#+name: health-check
-#+begin_src sh :var host="localhost"
-curl -sf http://$host/health
-#+end_src
-```
-
-Call tools from any org buffer:
-
-```org
-#+call: deploy(env="production")
-
-#+call: health-check(host="app.example.com")
-```
 
 ### tools.org commands
 

@@ -1,3 +1,4 @@
+#+PROPERTY: header-args:sh :results output
 #+TARGET: /ssh:example1.com: (server1)
 #+TARGET: /ssh:example2.com: (server2)
 #+TITLE: Running server commands
