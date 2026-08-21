@@ -1,6 +1,9 @@
-;; devops-drift.el - Drift detection for devops.el -*- lexical-binding: t; -*-
+;;; devops-drift.el --- Drift detection for devops.el -*- lexical-binding: t; -*-
 
 ;; Copyright (C) 2026 Kyle S Passarelli
+
+;; Author: Kyle S Passarelli <kyle.passarelli@gmail.com>
+;; URL: https://github.com/kpassapk/devops.el
 
 ;; This package is free software; you can redistribute it and/or modify
 ;; it under the terms of the GNU General Public License as published by
@@ -179,28 +182,33 @@ heading at point (mirroring `devops-tangle').  Return (LOCAL-ROOT . ENTRIES)
 where ENTRIES are the plists of `devops--drift-tangle-heading', each with
 :status and :detail added.  Unlike tangling to a remote, a drift check is
 read-only, so a failing target yields an `error' entry instead of aborting.
-The caller owns LOCAL-ROOT and must delete it."
+The caller owns LOCAL-ROOT and must delete it.
+
+Runs under `devops-with-sync', for the same reason tangling does: a
+comparison needs the real output of an executed noweb block, not the
+placeholder an async evaluation returns."
   (with-current-buffer source-buf
-    (let ((spec (devops--tangle-spec all))
-          (root (make-temp-file "devops-drift-" t))
-          (entries nil))
-      (dolist (e spec)
-        (setq entries
-              (append entries
-                      (devops--drift-tangle-heading
-                       source-buf (plist-get e :heading-pos)
-                       (plist-get e :tag) (plist-get e :target) root))))
-      ;; Several blocks may append to one tangled file; one entry each.
-      (setq entries (seq-uniq entries
-                              (lambda (a b)
-                                (equal (plist-get a :local)
-                                       (plist-get b :local)))))
-      (dolist (entry entries)
-        (let ((status (devops--drift-status (plist-get entry :local)
-                                            (plist-get entry :remote))))
-          (plist-put entry :status (car status))
-          (plist-put entry :detail (cdr status))))
-      (cons root entries))))
+    (devops-with-sync
+      (let ((spec (devops--tangle-spec all))
+            (root (make-temp-file "devops-drift-" t))
+            (entries nil))
+        (dolist (e spec)
+          (setq entries
+                (append entries
+                        (devops--drift-tangle-heading
+                         source-buf (plist-get e :heading-pos)
+                         (plist-get e :tag) (plist-get e :target) root))))
+        ;; Several blocks may append to one tangled file; one entry each.
+        (setq entries (seq-uniq entries
+                                (lambda (a b)
+                                  (equal (plist-get a :local)
+                                         (plist-get b :local)))))
+        (dolist (entry entries)
+          (let ((status (devops--drift-status (plist-get entry :local)
+                                              (plist-get entry :remote))))
+            (plist-put entry :status (car status))
+            (plist-put entry :detail (cdr status))))
+        (cons root entries)))))
 
 ;;; Noninteractive API
 
@@ -541,3 +549,5 @@ With prefix ARG, check every target-tagged heading in the buffer."
     (pop-to-buffer buf)))
 
 (provide 'devops-drift)
+
+;;; devops-drift.el ends here

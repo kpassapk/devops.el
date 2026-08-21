@@ -1,3 +1,4 @@
+#+PROPERTY: header-args:sh :results output
 #+TARGET: /ssh:example1.com: (server1)
 #+TARGET: /ssh:example2.com: (server2)
 #+TITLE: Running server commands
@@ -31,7 +32,7 @@ With =devops.el=, we can run the same command by adding a tag to a parent headin
 * Try it
 
 Instructions:
-1. Modify the server blocks at the top of file (see caveats)
+1. Modify the server blocks at the top of file
 2. Run =devops-set-header-args-from-tag=
 3. You should see header-args set as follows
 

@@ -1,6 +1,6 @@
 # devops.el: Infrastructure as an org file
 
-By following some conventions, this package helps you to manage infrastructure as a set of org files. Infrastructure here may be servers, containers, serverless functions, DNS... up to you.
+By following some conventions, this package helps you to manage infrastructure with org mode. Infrastructure here may be servers, containers, serverless functions, DNS... up to you.
 
 ## Installation
 
@@ -59,14 +59,16 @@ There are some shortcomings and annoyances, however:
 
 1. Long-running commands (like `apt-get update`) can lock up emacs for an extended period of time. In devops workflows, most of the work is remote, so the experience is... choppy. Even worse, if a command asks for input your emacs might become unresponsive.
 
-2. When describing an actual production environment, it's easy to end up with duplicate `/ssh:someuser@someserver:somedirectory/...` `:dir` properties all over the file. This is extremely difficult to scan.
+2. When describing an actual production environment, it's easy to end up with duplicate `/ssh:someuser@someserver:somedirectory/...` `:dir` properties all over the file. This is difficult to scan.
 
 3. Each source block can only have a single `:dir`. This makes the following typical use cases difficult:
 
-  - Uploading the same content on multiple servers
+  - Uploading the same content to multiple servers
   - Running the same command on multiple servers
 
-4. Tangling socpe is either too small or to wide. The `org-babel-tangle` function tangles the entire buffer by default, or alternatively a single source code block. Tangling an entire buffer might be risky, and tangling a single block gets very annoying.
+4. Tangling ignores `:dir`. If you are uploading a file and then running a server command, now the server needs to go in two places. (`:dir` and `:tangle`)
+
+5. tangling scope is either too small or to wide. The `org-babel-tangle` function tangles the entire buffer by default, or alternatively a single source code block. Tangling an entire buffer might be risky, and tangling a single block gets very annoying.
 
 This library provides functionality to better support devops-like workflows. It does this by applying some conventions on top of org mode.
 
@@ -159,17 +161,18 @@ Given
 | `/etc/foo.txt`   | `/ssh:example1.com:/etc/foo.txt`          |
 | `~/foo.txt`      | `/ssh:example1.com:~/foo.txt`             |
 
-## Disabling with :target nil
+### Disabling with :target nil
 
-Sometimes you may want to "turn off" the target for a single block.
+Sometimes you may want to "turn off" the target for a single block. This is useful for locally
+processing the output of the code block.
 
-As an example, let's say we have a container `TARGET`:
+For example, let's say we have a `TARGET` that points to a Podman container in a server:
 
 ```
 #+TARGET: /ssh:server.com|podman:my-container: (container)
 ```
 
-We can filter the results locally by adding `target: nil` to a second block:
+We can chain together a remote command and a local processing step as follows:
 
 ```
 * Service status                                      :container:
@@ -191,21 +194,16 @@ This will work even if the `jq` command is not installed in the container :)
 
 ## Drift detection
 
-Tangling pushes the org file out to its targets. `devops-drift` asks the
-opposite question: does what is on the target still match what the org file
-says? The heading is tangled to a local temp directory first — so noweb, including
-per-server noweb, resolves exactly as a real tangle would — and each tangled file
-is compared byte-for-byte with its counterpart on the target. Nothing is written
-to a target: a drift check is read-only.
-
-`devops-drift` (`C-u` for the whole buffer) shows a `*Drift Report*` buffer, one
-row per file:
+`devops-drift` shows a `*Drift Report*` buffer, telling you whtether code blocks and their 
+tangle targets have identical content. 
 
 ```
   ok       server1   /ssh:example1.com:~/foo.txt
   DRIFT    server1   /ssh:example1.com:~/app.conf
   MISSING  server2   /ssh:example2.com:~/app.conf
 ```
+
+The following keys are active in the diff report buffer:
 
 | Key       | Action                                    |
 |-----------|-------------------------------------------|
@@ -214,73 +212,68 @@ row per file:
 | `d`       | diff them                                 |
 | `g`       | re-run the check                          |
 
-### Checking drift from a source block
+There are also noninteractive variants - `devops-drift-{all|headline|custom-id}`
+for scripting.
 
-The report is a buffer you read and then lose. A check written into the org file
-stays with the notes explaining it, and its result is part of the document:
+## Long running commands
 
-```org
-#+begin_src emacs-lisp :results output
-(princ (devops-drift-summary (devops-drift-headline "servers/box.org" "Caddy")))
+There are seveeral options for running background commands in emacs asynchronously:
+
+1. [ob-async](https://github.com/astahlman/ob-async)
+2. [ob-screen](https://howardism.org/Technical/Emacs/literate-devops.html#fnr.4)
+3. [detached.el](https://sr.ht/~niklaseklund/detached.el)
+
+To avoid dependnecies, `devops.el` uses built-in features and tries to make them more 
+convenient.
+
+### Shell async sessions
+
+In recent org mode versions, (Org 9.7+), executing source blocks with `:session foo :async yes` will print a placeholder. Once the background command finishes, the placehodler gets replaced with the output.
+
+When `devops-enable-session-async` is enabled, blocks are executed as if you had written 
+the `session` and `async` headers yourself. For example,
+
+```
+#+TARGET: /ssh:example.com: (example)
+
+* Update packages :example:
+
+#+begin_src sh :results output
+  apt-get update
 #+end_src
-
-#+RESULTS:
-: DRIFT    server1   /ssh:example1.com:~/caddy_etc/Caddyfile
-:
-: --- /ssh:example1.com:~/caddy_etc/Caddyfile
-: +++ ~/caddy_etc/Caddyfile (server1)
-: @@ -78,6 +78,11 @@
-: ...
 ```
 
-| Function                              | Checks                                          |
-|---------------------------------------|-------------------------------------------------|
-| `(devops-drift-all source)`           | every target-tagged heading                     |
-| `(devops-drift-headline source title)` | the subtree titled `title`                     |
-| `(devops-drift-custom-id source id)`  | the subtree whose `CUSTOM_ID` is `id`           |
+injects these `dir`, `session` and `async` headers:
 
-`source` is an org buffer or a file name. All three return the same data: one
-alist per tangled file, and no temp directory left behind.
-
-| Key       | Value                                                        |
-|-----------|--------------------------------------------------------------|
-| `:status` | `:same`, `:drift`, `:missing` (no file there) or `:error`     |
-| `:tag`    | the target tag this file was tangled for                      |
-| `:path`   | the block's `:tangle` value                                   |
-| `:remote` | where that path lands on the target                           |
-| `:target` | the `#+TARGET` value                                          |
-| `:detail` | the error message, for `:error`                               |
-| `:diff`   | unified diff, target first, for `:drift`                      |
-
-`devops-drift-summary` formats that list as the text above,
-`devops-drift-table` as an org table (for `:results table`), and
-`devops-drift-ok-p` reduces it to a boolean — nil for an empty list, since a
-check that compared nothing has shown nothing.
-
-### cljbang.el
-
-If you use [cljbang.el](https://github.com/borkdude/cljbang.el), the drift API returns maps:
-
-```clojure
-(require '[devops-drift :as drift])
-
-(->> (drift/all "servers/box.org")
-     (remove #(= (:status %) :same))
-     (map (fn [{:keys [path status]}] [path status])))
-;; => (["app.conf" :drift])
+```
+#+begin_src sh :results output :dir /ssh:example.com: :session devops:example :async yes
+  apt-get update
+#+end_src
 ```
 
-## Long-running commands
+(Only works with `:results output` I think. You will probably want to set this at top of file.
+See [](examples/1_commands.org))
 
-Long commands such as `apt-get update` can lock up emacs. There are several worakrounds, from 
-using sessions and `:async yes` (built in), to [ob-async](https://github.com/astahlman/ob-async), and probably others. YMMV.
+This is off by default because it makes blocks stateful. Commands like `cd` now survive 
+from one block to the next. To enable, set
 
-[ob-screen]: https://howardism.org/Technical/Emacs/literate-devops.html#fnr.4
+```elisp
+(setq devops-enable-session-async t)
+```
 
-I like using a separate terminal to run most commands, instead of emacs.  This package provides a `devops-open-terminal-dwim` command, which opens the current source block in a terminal. (Only `ghostty` supported at the moment, but more terminals planned.)
+Session names come from `devops-session-name-function`, which defaults to
+`devops:<tag>`. A session name is a buffer name in a single global namespace, so
+if two org files use the same tag for different hosts, set this to a function
+that also folds in the project, target or buffer name.
 
-Any `var` references become environment variables loaded into the (usually remote) remote shell. The source block content is copied to the clipboard, so you can do `devops-open-terminal-dwim`, then 
-paste, and you will be running the command at the correct location.
+### Terminal DWIM command
+
+I often like using a separate terminal to run most commands, instead of emacs.
+This package provides a `devops-open-terminal-dwim` command, which opens the current source block in a terminal. (Only `ghostty` supported at the moment, but more terminals planned.)
+
+Any `var` references become environment variables loaded into the (usually remote) 
+shell. The source block content is copied to the clipboard, so you can do 
+`devops-open-terminal-dwim`, then paste, and you will be running the command at the correct location.
 
 ## devops-lob
 
@@ -298,30 +291,6 @@ Any project with a `tools.org` at its root can expose named org-babel blocks as 
 ```
 
 With `devops-lob-auto-mode` enabled, opening any file in a project that has `tools.org` automatically loads its named blocks into the org-babel Library of Babel.
-
-### tools.org format
-
-```org
-#+title: Tools
-
-#+name: deploy
-#+begin_src sh :var env="staging"
-./deploy.sh $env
-#+end_src
-
-#+name: health-check
-#+begin_src sh :var host="localhost"
-curl -sf http://$host/health
-#+end_src
-```
-
-Call tools from any org buffer:
-
-```org
-#+call: deploy(env="production")
-
-#+call: health-check(host="app.example.com")
-```
 
 ### tools.org commands
 

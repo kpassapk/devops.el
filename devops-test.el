@@ -650,6 +650,268 @@ targets land next to the org file rather than in the system temp dir."
       (let ((org-confirm-babel-evaluate nil))
         (should-error (org-babel-execute-src-block) :type 'user-error)))))
 
+;;; Async sessions (decision 2: async execution in per-target sessions)
+
+(defun devops-test--executor-params (lang)
+  "Execute the src block at point with `org-babel-execute:LANG' stubbed out.
+Return the header arguments the executor was handed, so an injected
+`:session' or `:async' can be read without starting a shell."
+  (let ((fn (intern (concat "org-babel-execute:" lang)))
+        (seen nil))
+    (cl-letf (((symbol-function fn)
+               (lambda (_body params) (setq seen params) "")))
+      (let ((org-confirm-babel-evaluate nil))
+        (org-babel-execute-src-block)))
+    seen))
+
+(defmacro devops-test--with-session-org (header &rest body)
+  "Run BODY on a sh block carrying HEADER, under a heading tagged `:local:'."
+  (declare (indent 1))
+  `(devops-test--with-org
+       (concat "#+TARGET: /srv/app/ (local)\n\n"
+               "* Run\t\t:local:\n\n"
+               "#+begin_src sh " ,header "\npwd\n#+end_src\n")
+     (goto-char (point-min))
+     (re-search-forward "begin_src")
+     ,@body))
+
+(defun devops-test--skip-unless-shell-async ()
+  "Skip the calling test unless org can run a shell block asynchronously.
+`ob-shell' gained `:async' in Org 9.7.  Under the Org 9.6 that Emacs 29
+bundles, `devops--lang-async-p' turns the injection off, so there is no
+session and no placeholder to assert on.
+
+`ert-skip' rather than `skip-unless': the latter is gone on Emacs 31 and
+its replacement `ert-skip-unless' does not exist on 29."
+  (unless (devops--lang-async-p "sh")
+    (ert-skip "ob-shell has no :async support (needs Org 9.7)")))
+
+(ert-deftest devops-session-async-off-by-default-test ()
+  "Without `devops-enable-session-async', no session or async is injected."
+  (devops-test--with-session-org ""
+    (let ((params (devops-test--executor-params "sh")))
+      (should (equal (cdr (assq :dir params)) "/srv/app/"))
+      (should (equal (cdr (assq :session params)) "none"))
+      (should-not (assq :async params)))))
+
+(ert-deftest devops-session-async-injects-session-and-async-test ()
+  "With the option on, a block gets `:session devops:TAG' and `:async yes'."
+  (devops-test--skip-unless-shell-async)
+  (let ((devops-enable-session-async t))
+    (devops-test--with-session-org ""
+      (let ((params (devops-test--executor-params "sh")))
+        (should (equal (cdr (assq :dir params)) "/srv/app/"))
+        (should (equal (cdr (assq :session params)) "devops:local"))
+        (should (equal (cdr (assq :async params)) "yes"))))))
+
+(ert-deftest devops-session-async-unsupported-language-test ()
+  "An org whose `ob-shell' has no `:async' gets neither session nor async.
+Injecting `:session' alone would leave the block running synchronously
+inside a comint buffer the user never sees, so a prompt would hang emacs
+worse than it does with no session at all."
+  (let ((devops-enable-session-async t))
+    (cl-letf (((symbol-function 'devops--lang-async-p) #'ignore))
+      (devops-test--with-session-org ""
+        (let ((params (devops-test--executor-params "sh")))
+          (should (equal (cdr (assq :dir params)) "/srv/app/"))
+          (should (equal (cdr (assq :session params)) "none"))
+          (should-not (assq :async params)))))))
+
+(ert-deftest devops--lang-async-p-test ()
+  "The probe answers for shell from `ob-shell', and yes for anything else."
+  (should (eq (devops--lang-async-p "sh") (devops--lang-async-p "bash")))
+  (should (devops--lang-async-p "python"))
+  (should (equal (devops--lang-async-p "sh")
+                 (and (require 'ob-shell nil t)
+                      (boundp 'ob-shell-async-indicator)
+                      t))))
+
+(ert-deftest devops-session-name-function-test ()
+  "`devops-session-name-function' decides the session name."
+  (devops-test--skip-unless-shell-async)
+  (let ((devops-enable-session-async t)
+        (devops-session-name-function
+         (lambda (tag target) (format "%s@%s" tag target))))
+    (devops-test--with-session-org ""
+      (should (equal (cdr (assq :session (devops-test--executor-params "sh")))
+                     "local@/srv/app/")))))
+
+(ert-deftest devops-session-async-explicit-session-wins-test ()
+  "A `:session' on the block is not overwritten by the tag's session."
+  (devops-test--skip-unless-shell-async)
+  (let ((devops-enable-session-async t))
+    (devops-test--with-session-org ":session other"
+      (let ((params (devops-test--executor-params "sh")))
+        (should (equal (cdr (assq :session params)) "other"))
+        (should (equal (cdr (assq :async params)) "yes"))))))
+
+(ert-deftest devops-session-async-session-none-test ()
+  "`:session none' opts a block out of both the session and async."
+  (let ((devops-enable-session-async t))
+    (devops-test--with-session-org ":session none"
+      (let ((params (devops-test--executor-params "sh")))
+        (should (equal (cdr (assq :session params)) "none"))
+        (should-not (assq :async params))))))
+
+(ert-deftest devops-session-async-explicit-async-no-test ()
+  "`:async no' runs one block synchronously while keeping its session."
+  (devops-test--skip-unless-shell-async)
+  (let ((devops-enable-session-async t))
+    (devops-test--with-session-org ":async no"
+      (let ((params (devops-test--executor-params "sh")))
+        (should (equal (cdr (assq :session params)) "devops:local"))
+        (should (equal (cdr (assq :async params)) "no"))))))
+
+(ert-deftest devops-session-async-from-property-test ()
+  "A `:session' inherited from a `header-args' property counts as explicit."
+  (let ((devops-enable-session-async t))
+    (devops-test--with-org
+        (concat "#+TARGET: /srv/app/ (local)\n\n"
+                "* Run\t\t:local:\n"
+                ":PROPERTIES:\n"
+                ":header-args: :session other\n"
+                ":END:\n\n"
+                "#+begin_src sh\npwd\n#+end_src\n")
+      (goto-char (point-min))
+      (re-search-forward "begin_src")
+      (should (equal (cdr (assq :session (devops-test--executor-params "sh")))
+                     "other")))))
+
+(ert-deftest devops-session-async-language-restricted-test ()
+  "Languages outside `devops-async-session-languages' get :dir and nothing else."
+  (let ((devops-enable-session-async t))
+    (devops-test--with-org
+        (concat "#+TARGET: /srv/app/ (local)\n\n"
+                "* Run\t\t:local:\n\n"
+                "#+begin_src emacs-lisp\n\"hi\"\n#+end_src\n")
+      (goto-char (point-min))
+      (re-search-forward "begin_src")
+      (let ((params (devops-test--executor-params "emacs-lisp")))
+        (should (equal (cdr (assq :dir params)) "/srv/app/"))
+        (should (equal (cdr (assq :session params)) "none"))
+        (should-not (assq :async params))))))
+
+(ert-deftest devops-session-async-explicit-dir-test ()
+  "A block that names its own :dir gets no session either."
+  (let ((devops-enable-session-async t))
+    (devops-test--with-session-org ":dir /srv/other/"
+      (let ((params (devops-test--executor-params "sh")))
+        (should (equal (cdr (assq :dir params)) "/srv/other/"))
+        (should (equal (cdr (assq :session params)) "none"))
+        (should-not (assq :async params))))))
+
+(ert-deftest devops-session-async-target-nil-test ()
+  "`:target nil' opts a block out of the session along with the target."
+  (let ((devops-enable-session-async t))
+    (devops-test--with-session-org ":target nil"
+      (let ((params (devops-test--executor-params "sh")))
+        (should-not (assq :dir params))
+        (should (equal (cdr (assq :session params)) "none"))
+        (should-not (assq :async params))))))
+
+(ert-deftest devops-with-sync-inhibits-async-test ()
+  "`devops-with-sync' suppresses injection even with the option on."
+  (let ((devops-enable-session-async t))
+    (devops-test--with-session-org ""
+      (let ((params (devops-with-sync (devops-test--executor-params "sh"))))
+        (should (equal (cdr (assq :dir params)) "/srv/app/"))
+        (should (equal (cdr (assq :session params)) "none"))
+        (should-not (assq :async params))))))
+
+(ert-deftest devops-session-async-tangle-noweb-test ()
+  "Tangling resolves an executing noweb reference to output, not a placeholder.
+Under `:async' the return value of a block is a UUID, which is what would
+land in the tangled file on the server."
+  (let ((devops-enable-session-async t))
+    (devops-test--with-local-target target
+      (devops-test--with-org
+          (format (concat "#+TARGET: %s (local)\n\n"
+                          "* Deploy\t\t:local:\n\n"
+                          "#+name: SECRET\n"
+                          "#+begin_src sh\nprintf s3cret\n#+end_src\n\n"
+                          "#+begin_src yaml :tangle config.yaml :noweb yes\n"
+                          "api-key: <<SECRET()>>\n#+end_src\n")
+                  target)
+        (let ((org-confirm-babel-evaluate nil))
+          (devops-tangle-headline (current-buffer) "Deploy"))
+        (with-temp-buffer
+          (insert-file-contents (concat target "config.yaml"))
+          (should (search-forward "api-key: s3cret" nil t)))))))
+
+(ert-deftest devops-session-async-executes-in-session-test ()
+  "A block returns a placeholder, then its output arrives from the session.
+The end-to-end path: the heading's tag names a shell session, the block
+runs there at the target's directory, and `org-babel-comint-async-filter'
+replaces the placeholder in the buffer when the command finishes."
+  (devops-test--skip-unless-shell-async)
+  (let ((devops-enable-session-async t))
+    (devops-test--with-local-target target
+      (unwind-protect
+          (devops-test--with-org
+              (format (concat "#+TARGET: %s (local)\n\n"
+                              "* Run\t\t:local:\n\n"
+                              "#+begin_src sh\npwd\n#+end_src\n")
+                      target)
+            (goto-char (point-min))
+            (re-search-forward "begin_src")
+            (let* ((org-confirm-babel-evaluate nil)
+                   (uuid (org-babel-execute-src-block))
+                   (deadline (+ (float-time) 30)))
+              (should (get-buffer "devops:local"))
+              (should (string-match-p "\\`[0-9a-f-]+\\'" uuid))
+              (while (and (< (float-time) deadline)
+                          (save-excursion
+                            (goto-char (point-min))
+                            (search-forward uuid nil t)))
+                (accept-process-output nil 0.2))
+              (goto-char (point-min))
+              (should-not (search-forward uuid nil t))
+              (should (re-search-forward "^: \\(.+\\)$" nil t))
+              (should (equal (file-name-as-directory
+                              (file-truename (org-trim (match-string 1))))
+                             (file-name-as-directory (file-truename target))))))
+        (when-let* ((buf (get-buffer "devops:local")))
+          (let ((kill-buffer-query-functions nil))
+            (kill-buffer buf)))))))
+
+(ert-deftest devops-goto-session-test ()
+  "`devops-goto-session' pops to the heading's session buffer."
+  (let ((devops-enable-session-async t)
+        (buf (get-buffer-create "devops:local")))
+    (unwind-protect
+        (devops-test--with-session-org ""
+          (save-window-excursion
+            (devops-goto-session)
+            (should (eq (current-buffer) buf))))
+      (kill-buffer buf))))
+
+(ert-deftest devops-goto-session-without-buffer-errors-test ()
+  "`devops-goto-session' says so when the session has not been started."
+  (let ((devops-enable-session-async t))
+    (devops-test--with-session-org ""
+      (should-error (devops-goto-session) :type 'user-error))))
+
+(ert-deftest devops-restart-session-test ()
+  "`devops-restart-session' kills the heading's session buffer."
+  (let ((devops-enable-session-async t)
+        (buf (get-buffer-create "devops:local")))
+    (unwind-protect
+        (devops-test--with-session-org ""
+          (devops-restart-session)
+          (should-not (buffer-live-p buf)))
+      (when (buffer-live-p buf) (kill-buffer buf)))))
+
+(ert-deftest devops-session-no-target-errors-test ()
+  "The session commands error on a heading with no target tag."
+  (devops-test--with-org
+      (concat "#+TARGET: /srv/app/ (local)\n\n"
+              "* Run\n\n"
+              "#+begin_src sh\npwd\n#+end_src\n")
+    (goto-char (point-min))
+    (re-search-forward "begin_src")
+    (should-error (devops-goto-session) :type 'user-error)
+    (should-error (devops-restart-session) :type 'user-error)))
+
 ;;; Multi-target tangling (README: same file to several servers)
 
 (ert-deftest devops-tangle-multi-target-test ()
