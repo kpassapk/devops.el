@@ -320,7 +320,7 @@ and `:session other' attaches it to a session of the user's choosing."
          (unless (devops--header-cell :async params block-params)
            (list (cons :async "yes"))))))))
 
-(defun devops--inject-header-args-from-tags (orig-fn &optional arg info params executor-type)
+(defun devops--inject-header-args-from-tags (args)
   "Advise org-babel-execute-src-block to inject :dir from #+TARGET tags.
 An explicit :dir wins: the heading's target is neither resolved nor
 prompted for when the block already carries one.  `:target nil' opts the
@@ -330,25 +330,40 @@ block out of the heading's target without naming a directory, leaving
 When the heading's target is what supplies :dir, the same lookup can also
 supply :session and :async; see `devops--async-session-cells'.  A block
 that named its own :dir is running somewhere devops did not choose, so it
-gets no session either."
-  (let* ((block-info (devops--block-info info))
+gets no session either.
+
+ARGS is the whole argument list of `org-babel-execute-src-block', of
+which only PARAMS -- its third -- is rewritten.  A `:filter-args' advice
+rather than an `:around' one because that is all this does: naming the
+arguments to pass them on again couples devops to how many there are,
+which is how a block ran without its EXECUTOR-TYPE on org 9.6."
+  (let* ((info (nth 1 args))
+         (params (nth 2 args))
+         (block-info (devops--block-info info))
          (block-params (nth 2 block-info))
          (pair (unless (or (devops--target-opted-out-p params block-params)
                            (devops--header-cell :dir params block-params))
-                 (devops--heading-target)))
-         (params (if pair
-                     ;; Ours first: within one alist `org-babel-merge-params'
-                     ;; lets a later pair overwrite an earlier one, so an
-                     ;; explicit PARAMS from the caller still wins.
-                     (append (cons (cons :dir (cdr pair))
-                                   (devops--async-session-cells
-                                    params block-params (nth 0 block-info)
-                                    (car pair) (cdr pair)))
-                             params)
-                   params)))
-    (apply orig-fn arg info params (and executor-type (list executor-type)))))
+                 (devops--heading-target))))
+    (if (not pair)
+        args
+      (let ((params
+             ;; Ours first: within one alist `org-babel-merge-params'
+             ;; lets a later pair overwrite an earlier one, so an
+             ;; explicit PARAMS from the caller still wins.
+             (append (cons (cons :dir (cdr pair))
+                           (devops--async-session-cells
+                            params block-params (nth 0 block-info)
+                            (car pair) (cdr pair)))
+                     params))
+            ;; Called with fewer than three arguments -- the interactive
+            ;; case passes none -- PARAMS still needs a slot to land in.
+            ;; Pad, never truncate: an argument org adds later travels on
+            ;; untouched.
+            (args (append args (make-list (max 0 (- 3 (length args))) nil))))
+        (append (list (nth 0 args) (nth 1 args) params) (nthcdr 3 args))))))
 
-(advice-add 'org-babel-execute-src-block :around #'devops--inject-header-args-from-tags)
+(advice-add 'org-babel-execute-src-block :filter-args
+            #'devops--inject-header-args-from-tags)
 
 (defun devops--heading-session-name ()
   "Return the session name for the current heading's target.

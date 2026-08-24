@@ -226,7 +226,7 @@ There are seveeral options for running background commands in emacs asynchronous
 To avoid dependnecies, `devops.el` uses built-in features and tries to make them more 
 convenient.
 
-### Shell async sessions
+### Shell async sessions (experimental)
 
 In recent org mode versions, (Org 9.7+), executing source blocks with `:session foo :async yes` will print a placeholder. Once the background command finishes, the placehodler gets replaced with the output.
 
