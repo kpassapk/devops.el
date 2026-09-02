@@ -215,7 +215,7 @@ The following keys are active in the diff report buffer:
 There are also noninteractive variants - `devops-drift-{all|headline|custom-id}`
 for scripting.
 
-## Long running commands
+## Shell async sessions (experimental)
 
 There are seveeral options for running background commands in emacs asynchronously:
 
@@ -225,8 +225,6 @@ There are seveeral options for running background commands in emacs asynchronous
 
 To avoid dependnecies, `devops.el` uses built-in features and tries to make them more 
 convenient.
-
-### Shell async sessions (experimental)
 
 In recent org mode versions, (Org 9.7+), executing source blocks with `:session foo :async yes` will print a placeholder. Once the background command finishes, the placehodler gets replaced with the output.
 
@@ -300,10 +298,3 @@ With `devops-lob-auto-mode` enabled, opening any file in a project that has `too
 | `devops-lob-unload-project-tools` | Remove current project's tools from LOB           |
 | `devops-lob-reload-project-tools` | Unload then reload (pick up edits to `tools.org`) |
 | `devops-lob-unload-all`           | Remove all devops-tracked LOB entries             |
-
-Inspect loaded tools:
-
-```elisp
-(devops-org-tool-blocks)          ; all entries
-(devops-org-tool-blocks "deploy") ; filtered by regexp
-```
