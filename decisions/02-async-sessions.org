@@ -165,6 +165,18 @@ drift entry points:
 =org-babel-comint-use-async= already guards =org-babel-exp-reference-buffer= (so
 export is safe), but it knows nothing about tangling. This is ours to handle.
 
+The same contract holds outside tangling whenever one block's output feeds
+another. A =:var NAME=name= on a src block, a =#+call: say-hi(NAME=name)=
+argument, and an executing noweb reference all resolve through
+=org-babel-ref-resolve=, which executes the named block and hands back its
+return value. Under async that value is the placeholder, so the caller binds a
+UUID and prints it (issue 14). Worse, when both blocks report in one chunk the
+comint async filter finds the reference's UUID inside the caller's freshly
+inserted result and overwrites the caller's result with the reference's output.
+So =org-babel-ref-resolve= is advised to run under =devops-with-sync=: the
+block the user invoked stays async, but everything executed to resolve its
+inputs is synchronous.
+
 ** 7. Programmatic callers opt out explicitly
 
 =devops-tangle-headline=, =devops-tangle-custom-id=, the drift check, and the

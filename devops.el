@@ -106,9 +106,10 @@ Bound by `devops-with-sync' around tangling and drift checks.")
   "Run BODY with async injection inhibited.
 Async breaks the contract that the return value of
 `org-babel-execute-src-block' is the block's result: under `:async' it is
-a UUID placeholder.  Anything that reads that value — a noweb reference
-that executes a block, `devops-tangle-headline', a drift check — needs
-the real thing, so it runs inside this macro.  Interactive \\[org-ctrl-c-ctrl-c]
+a UUID placeholder.  Anything that reads that value — a `:var' or
+`#+call:' argument naming a block, a noweb reference that executes one,
+`devops-tangle-headline', a drift check — needs the real thing, so it
+runs inside this macro.  Interactive \\[org-ctrl-c-ctrl-c]
 gets async; everything scripted gets synchronous evaluation unless it
 asks otherwise."
   (declare (indent 0) (debug t))
@@ -364,6 +365,18 @@ which is how a block ran without its EXECUTOR-TYPE on org 9.6."
 
 (advice-add 'org-babel-execute-src-block :filter-args
             #'devops--inject-header-args-from-tags)
+
+(defun devops--resolve-ref-sync (fn &rest args)
+  "Run `org-babel-ref-resolve' (FN with ARGS) under `devops-with-sync'.
+Resolving a reference -- a `:var' naming a block, a `#+call:' argument,
+a noweb `<<name()>>' -- may execute that block, and the caller binds
+whatever comes back.  Under `:async' that is a UUID placeholder, which a
+shell block then prints as its own output, and the session's async
+filter later mistakes the caller's result for the reference's."
+  (devops-with-sync
+    (apply fn args)))
+
+(advice-add 'org-babel-ref-resolve :around #'devops--resolve-ref-sync)
 
 (defun devops--heading-session-name ()
   "Return the session name for the current heading's target.
