@@ -874,6 +874,77 @@ replaces the placeholder in the buffer when the command finishes."
           (let ((kill-buffer-query-functions nil))
             (kill-buffer buf)))))))
 
+(ert-deftest devops-session-async-var-reference-test ()
+  "A `:var' naming another block gets that block's output, not a placeholder.
+`org-babel-ref-resolve' executes the named block through
+`org-babel-execute-src-block', which the advice turns async, so the
+variable is bound to a UUID and the calling block prints it (issue #14).
+Which wrong answer lands in the buffer depends on timing: \"hi UUID\"
+when the reference's output arrives first, or the reference's own output
+when it arrives second and `org-babel-comint-async-filter' finds its
+UUID inside the caller's freshly inserted result."
+  (devops-test--skip-unless-shell-async)
+  (let ((devops-enable-session-async t))
+    (devops-test--with-local-target target
+      (unwind-protect
+          (devops-test--with-org
+              (format (concat "#+TARGET: %s (local)\n\n"
+                              "* Run\t\t:local:\n\n"
+                              "#+name: name\n"
+                              "#+begin_src sh :results output\necho Kyle\n#+end_src\n\n"
+                              "#+begin_src sh :var NAME=name\necho \"hi $NAME\"\n#+end_src\n")
+                      target)
+            (goto-char (point-min))
+            (re-search-forward "begin_src sh :var")
+            (let* ((org-confirm-babel-evaluate nil)
+                   (uuid (org-babel-execute-src-block))
+                   (deadline (+ (float-time) 30)))
+              (should (string-match-p "\\`[0-9a-f-]+\\'" uuid))
+              (while (and (< (float-time) deadline)
+                          (save-excursion
+                            (goto-char (point-min))
+                            (search-forward uuid nil t)))
+                (accept-process-output nil 0.2))
+              (goto-char (point-min))
+              (should-not (search-forward uuid nil t))
+              (goto-char (point-min))
+              (re-search-forward "begin_src sh :var")
+              (should (re-search-forward "^: \\(.+\\)$" nil t))
+              (should (equal (org-trim (match-string 1)) "hi Kyle"))))
+        (when-let* ((buf (get-buffer "devops:local")))
+          (let ((kill-buffer-query-functions nil))
+            (kill-buffer buf)))))))
+
+(ert-deftest devops-session-async-call-reference-test ()
+  "A `#+call:' whose argument names a block gets its output, not a placeholder.
+The call line itself runs synchronously -- `devops--session-declared-p'
+counts a Library of Babel INFO as declared -- but resolving `name=name'
+goes through `org-babel-ref-resolve' and executes the `name' block with
+point on it, where the advice injects `:async'.  The same happens when
+the called block's own `:var' names a block that the call does not
+override (issue #14)."
+  (devops-test--skip-unless-shell-async)
+  (let ((devops-enable-session-async t))
+    (devops-test--with-local-target target
+      (unwind-protect
+          (devops-test--with-org
+              (format (concat "#+TARGET: %s (local)\n\n"
+                              "* Run\t\t:local:\n\n"
+                              "#+name: name\n"
+                              "#+begin_src sh :results output\necho Kyle\n#+end_src\n\n"
+                              "#+name: say-hi\n"
+                              "#+begin_src sh :var NAME=\"World\" :results output\n"
+                              "echo \"hi $NAME\"\n#+end_src\n\n"
+                              "#+call: say-hi(NAME=name)\n")
+                      target)
+            (goto-char (point-min))
+            (re-search-forward "^#\\+call")
+            (let ((org-confirm-babel-evaluate nil))
+              (should (equal (org-trim (org-ctrl-c-ctrl-c)) "hi Kyle"))))
+        (when-let* ((buf (get-buffer "devops:local")))
+          (let ((kill-buffer-query-functions nil))
+            (kill-buffer buf)))))))
+
 (ert-deftest devops-goto-session-test ()
   "`devops-goto-session' pops to the heading's session buffer."
   (let ((devops-enable-session-async t)
