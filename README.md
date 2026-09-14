@@ -88,6 +88,8 @@ The last two can be mitigated using elisp to name remote locations:
 
 This "named location" technique is a great way to organize things, and does not require any additional packages. As long as you remember to execute the elisp block first, you're good to go.
 
+## devops.el
+
 `devops.el` builds on this basic technique.
 - It lets you work with _named targets_, like the previous example, but without elisp
 - It wires up async functionality with no extra dependencies or syntax, avoiding lock-ups
