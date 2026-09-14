@@ -1,4 +1,4 @@
-# devops.el: Infrastructure as an org file
+# devops.el: Infrastructure as org files
 
 By following some conventions, this package helps you to manage infrastructure with org mode. Infrastructure here may be servers, containers, serverless functions, DNS... up to you.
 
@@ -53,8 +53,6 @@ api-key: <<API-KEY()>>
 
 (Note the parentheses in `API-KEY()`).
 
-## Limitations
-
 There are some shortcomings and annoyances, however:
 
 1. Long-running commands (like `apt-get update`) can lock up emacs for an extended period of time. In devops workflows, most of the work is remote, so the experience is... choppy. Even worse, if a command asks for input your emacs might become unresponsive.
@@ -70,7 +68,7 @@ There are some shortcomings and annoyances, however:
 
 5. Tangling ignores `:dir`. If you are uploading a file and then running a server command next to it, now the server needs to go in two places. (`:dir` and `:tangle`)
 
-The last two can be mitigated using elisp:
+The last two can be mitigated using elisp to name remote locations:
 
 ```
 #+begin_src emacs-lisp
@@ -88,9 +86,14 @@ The last two can be mitigated using elisp:
 
 This "named location" technique is a great way to organize things, and does not require any additional packages. As long as you remember to execute the elisp block first, you're good to go.
 
-`devops.el` uses this basic technique, without requiring any elisp. This makes notebooks easier to read. (and wirte!)
+`devops.el` builds on this basic technique.
+- It lets you work with _named targets_, like the previous example, but without elisp
+- It wires up async functionality with no extra dependencies or syntax, avoiding lock-ups
+- It allows for multiple remotes and multiple tangle targets
+- It adds some advanced features like _drift detection_
+- And more!
 
-It aims to make the whole experience of using org mode notebooks for infrsatructure tasks smoother and more DWIM.
+In general, it makes the whole experience of using org mode notebooks for infrsatructure tasks smoother and more DWIM.
 
 ## Devops-flavored Org Mode
 
@@ -166,20 +169,6 @@ You can tangle a file to multiple servers. This will create `~/foo.txt` on both
 ... contents of foo.xt ...
 #+END_SRC
 ```
-
-Given
-
-`#+TARGET: /ssh:example1.com:/opt/app (server1)`,
-
-`:tangle` resolves to a path within the host:
-
-| `:tangle`        | resolves to                               |
-|------------------|-------------------------------------------|
-| `foo.txt`        | `/ssh:example1.com:/opt/app/foo.txt`      |
-| `conf/foo.txt`   | `/ssh:example1.com:/opt/app/conf/foo.txt` |
-| `./conf/foo.txt` | same as above — the `./` is dropped       |
-| `/etc/foo.txt`   | `/ssh:example1.com:/etc/foo.txt`          |
-| `~/foo.txt`      | `/ssh:example1.com:~/foo.txt`             |
 
 ### Disabling with :target nil
 
@@ -263,7 +252,7 @@ The following keys are active in the diff report buffer:
 There are also noninteractive variants - `devops-drift-{all|headline|custom-id}`
 for scripting.
 
-## Shell async sessions (experimental)
+## Shell async sessions
 
 There are several options for running background commands in emacs asynchronously:
 
@@ -310,7 +299,7 @@ Caveats:
 - Only works with `:results output`
 - Can break with fancy prompts. (You're not putting fancy prompts on your servers anyway, right??)
 
-### Terminal DWIM command
+## Terminal DWIM command
 
 I often like using a separate terminal to run most commands, instead of emacs.
 This package provides a `devops-open-terminal-dwim` command, which opens the current source block in a terminal. (Only `ghostty` supported at the moment, but more terminals planned.)
