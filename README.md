@@ -53,6 +53,8 @@ api-key: <<API-KEY()>>
 
 (Note the parentheses in `API-KEY()`).
 
+## Limitations
+
 There are some shortcomings and annoyances, however:
 
 1. Long-running commands (like `apt-get update`) can lock up emacs for an extended period of time. In devops workflows, most of the work is remote, so the experience is... choppy. Even worse, if a command asks for input your emacs might become unresponsive.
