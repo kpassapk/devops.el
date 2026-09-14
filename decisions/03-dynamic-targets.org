@@ -1,0 +1,104 @@
+#+TITLE: Decision 3: Dynamic targets
+#+STATUS: Implemented
+#+DATE: 2026-09-14
+#+LINK: noweb https://orgmode.org/manual/Noweb-Reference-Syntax.html
+#+LINK: issue-2 https://github.com/kpassapk/devops.el/issues/2
+
+* Context
+
+A =#+TARGET= is a fixed string. That fits a notebook about one server,
+and fails for a runbook that deploys /an instance/: which server the
+steps run on is an input, looked up in a database, and known only when
+the runbook runs.
+
+Without a way to say so, the runbook falls back to local blocks that
+prefix every command with =ssh app@$SERVER=. The heading tag no longer
+says where a block runs, sessions and tangling do not apply, and a dry
+run cannot show which host each step would touch. In practice the file
+also keeps dead =#+TARGET= lines for hosts it never tags.
+
+A user in [[issue-2][issue #2]] solves the same duplication for =:tangle=
+with =:tangle (identity my-var)=: org evaluates a parenthesised header
+value, so a variable set in one block names the file in the others.
+
+* Options
+
+** A. A function variable, set buffer-locally by a setup block
+
+=(setq-local devops-target-function (lambda (tag) ...))= in a block near
+the top, consulted before the keyword list.
+
+Rejected. The variable lives in the buffer, and the buffer does not
+live as long as the run: =revert-buffer= re-initialises the major mode,
+which drops buffer-local variables, and a runner reverts after every
+failure and every operator pause. A resumed run never re-executes the
+setup block either, since it is not a step. The target would then be
+missing, or stale, exactly when the run is picked back up. It also
+moves "which machine" out of the keyword list, which is what makes a
+file scannable.
+
+** B. An elisp form in the keyword
+
+=#+TARGET: (my-fn) (server)=, evaluated at lookup.
+
+Workable, and org has the precedent. Rejected for now because reading
+the file -- drift, tangle paths -- would evaluate code, and because a
+form invites logic into a declaration.
+
+** C. A reference in the keyword
+
+=#+TARGET: <<server-target()>> (server)=, resolved at lookup by
+=org-babel-ref-resolve=.
+
+Chosen. See below.
+
+* Decisions
+
+** 1. Noweb brackets, noweb meaning
+
+=<<name>>= is the text of a literal block, =<<name()>>= the value of a
+src block, =<<name(ARGS)>>= the same with arguments. These are the
+distinctions noweb already makes, and =org-babel-ref-resolve= reads all
+three. A bare =<<name>>= naming a src block is refused: org would run
+it, but the keyword would not say so.
+
+** 2. Resolve at lookup, not at parse
+
+=devops-target-tag-alist= still returns the keywords as written. The
+reference is resolved in =devops--resolve-target-for-tag=, which every
+consumer -- =:dir= injection, sessions, tangling, drift, the terminal
+command -- reaches through =devops--heading-target-tags=. So only the
+tags a heading carries are resolved, there is no state to lose on a
+revert, and a value that changes between runs is read each time.
+
+** 3. Through =org-babel-ref-resolve=
+
+A =:var= resolves through the same function. Whatever advises it for a
+run -- cljbang-org binds CLI inputs there -- reaches the target with no
+work on the runner's side. The cost is that the block runs on every
+resolution; a target lookup should be cheap, and the docs say so.
+
+** 4. One line, or an error
+
+A target is a directory or a TRAMP prefix. A value with a newline is a
+block that printed more than its answer, and running on the first line
+of it would be a guess.
+
+** 5. A block under its own tag is an error
+
+Running the reference block resolves the target of its own heading. If
+that heading carries the tag being resolved, the lookup would recurse
+without end. =devops--resolving-tags= tracks the tags in flight and
+turns the loop into a =user-error=.
+
+* Consequences
+
+- The runbook tags its server headings again, drops the =ssh= prefixes,
+  and gets sessions and tangling on the resolved host.
+- A runner can print the resolved target of each step in a dry run,
+  since resolution needs no state beyond the inputs.
+- Sessions are named by tag /and/ resolved target. Decision 2 named
+  them by tag alone, assuming a tag maps to one target; with a moving
+  target that would send a block to whichever host the session was
+  started on. Folding the target into the default name makes this
+  correct without configuration.

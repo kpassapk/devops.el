@@ -113,6 +113,11 @@ Users with cross-file tag reuse set it to include the target or the buffer name.
 Default stays short, because short names are what people type when they attach
 to the session by hand.
 
+/Superseded by [[file:03-dynamic-targets.org][decision 3]]:/ once a target can
+change between runs, a session named by tag alone reuses a shell on the wrong
+host. The default now folds in the target, =devops:TAG TARGET=. The variable
+stays for anyone who wants the short form back.
+
 ** 4. Explicit block headers win
 
 The advice must not override what the user wrote. This is not automatic:

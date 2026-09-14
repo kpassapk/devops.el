@@ -43,6 +43,25 @@ The directory is removed afterwards."
   (should (null (devops--parse-target-keyword "malformed")))
   (should (null (devops--parse-target-keyword "/no/tag/here"))))
 
+(ert-deftest devops--parse-target-keyword-ref-test ()
+  "A #+TARGET value may be a noweb-style reference, kept as written."
+  (should (equal (devops--parse-target-keyword "<<server-target()>> (server)")
+                 '("server" . "<<server-target()>>")))
+  (should (equal (devops--parse-target-keyword "<<input-target>> (server)")
+                 '("server" . "<<input-target>>")))
+  ;; Arguments may contain spaces; the tag is still the last parenthesis.
+  (should (equal (devops--parse-target-keyword
+                  "<<t(INSTANCE=\"a b\")>> (server)")
+                 '("server" . "<<t(INSTANCE=\"a b\")>>"))))
+
+(ert-deftest devops-target-ref-test ()
+  "`devops-target-ref' tells a reference from a literal target."
+  (should (equal (devops-target-ref "<<server-target()>>") "server-target()"))
+  (should (equal (devops-target-ref "<<input-target>>") "input-target"))
+  (should (null (devops-target-ref "/ssh:host:")))
+  (should (null (devops-target-ref "..")))
+  (should (null (devops-target-ref "<<>>"))))
+
 (ert-deftest devops-target-tag-alist-test ()
   "Build tag->target alist from #+TARGET keywords."
   (devops-test--with-org
@@ -63,6 +82,82 @@ The directory is removed afterwards."
     (should (equal (devops--resolve-target-for-tag "t1") "/srv/one/"))
     (should (equal (devops--resolve-target-for-tag "t2") "/srv/two/"))
     (should (null (devops--resolve-target-for-tag "unknown")))))
+
+(ert-deftest devops--resolve-target-for-tag-literal-ref-test ()
+  "A bare <<NAME>> is the text of a fixed-width or example block."
+  (devops-test--with-org
+      (concat "#+TARGET: <<fw>> (t1)\n"
+              "#+TARGET: <<ex>> (t2)\n\n"
+              "#+name: fw\n: /srv/one/\n\n"
+              "#+name: ex\n#+begin_example\n/srv/two/\n#+end_example\n\n"
+              "* Heading\n")
+    (should (equal (devops--resolve-target-for-tag "t1") "/srv/one/"))
+    (should (equal (devops--resolve-target-for-tag "t2") "/srv/two/"))))
+
+(ert-deftest devops--resolve-target-for-tag-src-ref-test ()
+  "<<NAME()>> runs a src block and takes its one-line value."
+  (devops-test--with-org
+      (concat "#+TARGET: <<t()>> (t1)\n\n"
+              "* Locate\n\n"
+              "#+name: t\n#+begin_src sh :results output\n"
+              "echo /srv/three/\n#+end_src\n\n"
+              "#+name: v\n#+begin_src sh\n"
+              "echo /srv/four/\n#+end_src\n")
+    (let ((org-confirm-babel-evaluate nil))
+      (should (equal (devops--resolve-target-for-tag "t1") "/srv/three/"))
+      ;; :results value hands back a one-cell table; it is unwrapped.
+      (should (equal (devops--target-from-ref "t1" "v()") "/srv/four/")))))
+
+(ert-deftest devops--resolve-target-for-tag-src-ref-args-test ()
+  "A reference may pass arguments, like a #+call: line."
+  (devops-test--with-org
+      (concat "#+TARGET: <<t(HOST=\"two\")>> (t1)\n\n"
+              "* Locate\n\n"
+              "#+name: t\n#+begin_src sh :results output :var HOST=\"one\"\n"
+              "echo /ssh:$HOST:\n#+end_src\n")
+    (let ((org-confirm-babel-evaluate nil))
+      (should (equal (devops--resolve-target-for-tag "t1") "/ssh:two:")))))
+
+(ert-deftest devops--resolve-target-for-tag-bare-src-ref-errors-test ()
+  "A bare <<NAME>> naming a src block is refused, not run."
+  (devops-test--with-org
+      (concat "#+TARGET: <<t>> (t1)\n\n"
+              "#+name: t\n#+begin_src sh :results output\n"
+              "echo /srv/three/\n#+end_src\n")
+    (let ((org-confirm-babel-evaluate nil))
+      (should-error (devops--resolve-target-for-tag "t1") :type 'user-error))))
+
+(ert-deftest devops--resolve-target-for-tag-multiline-errors-test ()
+  "A reference that yields more than one line is not a target."
+  (devops-test--with-org
+      (concat "#+TARGET: <<t()>> (t1)\n\n"
+              "#+name: t\n#+begin_src sh :results output\n"
+              "echo /srv/a/; echo /srv/b/\n#+end_src\n")
+    (let ((org-confirm-babel-evaluate nil))
+      (should-error (devops--resolve-target-for-tag "t1") :type 'user-error))))
+
+(ert-deftest devops--resolve-target-for-tag-missing-ref-errors-test ()
+  "A reference to a block that does not exist is an error."
+  (devops-test--with-org "#+TARGET: <<nowhere()>> (t1)\n\n* Heading\n"
+    (should-error (devops--resolve-target-for-tag "t1"))))
+
+(ert-deftest devops--resolve-target-for-tag-self-ref-errors-test ()
+  "A reference block under the tag it defines errors instead of recursing."
+  (devops-test--with-org
+      (concat "#+TARGET: <<t()>> (t1)\n\n"
+              "* Locate\t\t:t1:\n\n"
+              "#+name: t\n#+begin_src sh :results output\n"
+              "echo /srv/three/\n#+end_src\n")
+    (let ((org-confirm-babel-evaluate nil))
+      (should-error (devops--resolve-target-for-tag "t1") :type 'user-error))))
+
+(ert-deftest devops--heading-target-tags-resolves-only-its-tags-test ()
+  "Only the references of tags on the heading are resolved."
+  (devops-test--with-org
+      (concat "#+TARGET: /srv/one/ (t1)\n"
+              "#+TARGET: <<nowhere()>> (t2)\n\n"
+              "* Heading\t\t:t1:\n")
+    (should (equal (devops--heading-target-tags) '(("t1" . "/srv/one/"))))))
 
 ;;; Heading tag resolution
 
@@ -650,6 +745,24 @@ targets land next to the org file rather than in the system temp dir."
       (let ((org-confirm-babel-evaluate nil))
         (should-error (org-babel-execute-src-block) :type 'user-error)))))
 
+(ert-deftest devops-execute-src-block-injects-dir-from-ref-test ()
+  "A block under a tag whose target is a reference runs where it resolves."
+  (devops-test--with-local-target target
+    (devops-test--with-org
+        (format (concat "#+TARGET: <<where()>> (local)\n\n"
+                        "* Locate\n\n"
+                        "#+name: where\n"
+                        "#+begin_src sh :results output\necho %s\n#+end_src\n\n"
+                        "* Run\t\t:local:\n\n"
+                        "#+begin_src sh\npwd\n#+end_src\n")
+                target)
+      (goto-char (point-max))
+      (re-search-backward "begin_src")
+      (let* ((org-confirm-babel-evaluate nil)
+             (result (org-babel-execute-src-block)))
+        (should (equal (file-name-as-directory (file-truename (org-trim result)))
+                       (file-name-as-directory (file-truename target))))))))
+
 ;;; Async sessions (decision 2: async execution in per-target sessions)
 
 (defun devops-test--executor-params (lang)
@@ -695,13 +808,13 @@ its replacement `ert-skip-unless' does not exist on 29."
       (should-not (assq :async params)))))
 
 (ert-deftest devops-session-async-injects-session-and-async-test ()
-  "With the option on, a block gets `:session devops:TAG' and `:async yes'."
+  "With the option on, a block gets `:session devops:TAG TARGET' and `:async yes'."
   (devops-test--skip-unless-shell-async)
   (let ((devops-enable-session-async t))
     (devops-test--with-session-org ""
       (let ((params (devops-test--executor-params "sh")))
         (should (equal (cdr (assq :dir params)) "/srv/app/"))
-        (should (equal (cdr (assq :session params)) "devops:local"))
+        (should (equal (cdr (assq :session params)) "devops:local /srv/app/"))
         (should (equal (cdr (assq :async params)) "yes"))))))
 
 (ert-deftest devops-session-async-unsupported-language-test ()
@@ -759,7 +872,7 @@ worse than it does with no session at all."
   (let ((devops-enable-session-async t))
     (devops-test--with-session-org ":async no"
       (let ((params (devops-test--executor-params "sh")))
-        (should (equal (cdr (assq :session params)) "devops:local"))
+        (should (equal (cdr (assq :session params)) "devops:local /srv/app/"))
         (should (equal (cdr (assq :async params)) "no"))))))
 
 (ert-deftest devops-session-async-results-value-stays-sync-test ()
@@ -780,7 +893,7 @@ status the block asked for; see `devops--shell-value-p'."
   (let ((devops-enable-session-async t))
     (devops-test--with-session-org ":results output"
       (let ((params (devops-test--executor-params "sh")))
-        (should (equal (cdr (assq :session params)) "devops:local"))
+        (should (equal (cdr (assq :session params)) "devops:local /srv/app/"))
         (should (equal (cdr (assq :async params)) "yes"))))))
 
 (ert-deftest devops-session-async-default-results-follow-ob-shell-test ()
@@ -897,33 +1010,34 @@ replaces the placeholder in the buffer when the command finishes."
   (devops-test--skip-unless-shell-async)
   (let ((devops-enable-session-async t))
     (devops-test--with-local-target target
-      (unwind-protect
-          (devops-test--with-org
-              (format (concat "#+TARGET: %s (local)\n\n"
-                              "* Run\t\t:local:\n\n"
-                              "#+begin_src sh\npwd\n#+end_src\n")
-                      target)
-            (goto-char (point-min))
-            (re-search-forward "begin_src")
-            (let* ((org-confirm-babel-evaluate nil)
-                   (uuid (org-babel-execute-src-block))
-                   (deadline (+ (float-time) 30)))
-              (should (get-buffer "devops:local"))
-              (should (string-match-p "\\`[0-9a-f-]+\\'" uuid))
-              (while (and (< (float-time) deadline)
-                          (save-excursion
-                            (goto-char (point-min))
-                            (search-forward uuid nil t)))
-                (accept-process-output nil 0.2))
+      (let ((session (devops--session-name "local" target)))
+        (unwind-protect
+            (devops-test--with-org
+                (format (concat "#+TARGET: %s (local)\n\n"
+                                "* Run\t\t:local:\n\n"
+                                "#+begin_src sh\npwd\n#+end_src\n")
+                        target)
               (goto-char (point-min))
-              (should-not (search-forward uuid nil t))
-              (should (re-search-forward "^: \\(.+\\)$" nil t))
-              (should (equal (file-name-as-directory
-                              (file-truename (org-trim (match-string 1))))
-                             (file-name-as-directory (file-truename target))))))
-        (when-let* ((buf (get-buffer "devops:local")))
-          (let ((kill-buffer-query-functions nil))
-            (kill-buffer buf)))))))
+              (re-search-forward "begin_src")
+              (let* ((org-confirm-babel-evaluate nil)
+                     (uuid (org-babel-execute-src-block))
+                     (deadline (+ (float-time) 30)))
+                (should (get-buffer session))
+                (should (string-match-p "\\`[0-9a-f-]+\\'" uuid))
+                (while (and (< (float-time) deadline)
+                            (save-excursion
+                              (goto-char (point-min))
+                              (search-forward uuid nil t)))
+                  (accept-process-output nil 0.2))
+                (goto-char (point-min))
+                (should-not (search-forward uuid nil t))
+                (should (re-search-forward "^: \\(.+\\)$" nil t))
+                (should (equal (file-name-as-directory
+                                (file-truename (org-trim (match-string 1))))
+                               (file-name-as-directory (file-truename target))))))
+          (when-let* ((buf (get-buffer session)))
+            (let ((kill-buffer-query-functions nil))
+              (kill-buffer buf))))))))
 
 (ert-deftest devops-session-async-var-reference-test ()
   "A `:var' naming another block gets that block's output, not a placeholder.
@@ -962,7 +1076,7 @@ UUID inside the caller's freshly inserted result."
               (re-search-forward "begin_src sh :var")
               (should (re-search-forward "^: \\(.+\\)$" nil t))
               (should (equal (org-trim (match-string 1)) "hi Kyle"))))
-        (when-let* ((buf (get-buffer "devops:local")))
+        (when-let* ((buf (get-buffer "devops:local /srv/app/")))
           (let ((kill-buffer-query-functions nil))
             (kill-buffer buf)))))))
 
@@ -992,14 +1106,14 @@ override (issue #14)."
             (re-search-forward "^#\\+call")
             (let ((org-confirm-babel-evaluate nil))
               (should (equal (org-trim (org-ctrl-c-ctrl-c)) "hi Kyle"))))
-        (when-let* ((buf (get-buffer "devops:local")))
+        (when-let* ((buf (get-buffer "devops:local /srv/app/")))
           (let ((kill-buffer-query-functions nil))
             (kill-buffer buf)))))))
 
 (ert-deftest devops-goto-session-test ()
   "`devops-goto-session' pops to the heading's session buffer."
   (let ((devops-enable-session-async t)
-        (buf (get-buffer-create "devops:local")))
+        (buf (get-buffer-create "devops:local /srv/app/")))
     (unwind-protect
         (devops-test--with-session-org ""
           (save-window-excursion
@@ -1016,7 +1130,7 @@ override (issue #14)."
 (ert-deftest devops-restart-session-test ()
   "`devops-restart-session' kills the heading's session buffer."
   (let ((devops-enable-session-async t)
-        (buf (get-buffer-create "devops:local")))
+        (buf (get-buffer-create "devops:local /srv/app/")))
     (unwind-protect
         (devops-test--with-session-org ""
           (devops-restart-session)
