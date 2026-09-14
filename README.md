@@ -88,7 +88,9 @@ The last two can be mitigated using elisp:
 
 This "named location" technique is a great way to organize things, and does not require any additional packages. As long as you remember to execute the elisp block first, you're good to go.
 
-`devops.el` builds on this basic technique. It aims to make the whole experience of using org mode notebooks for infrsatructure tasks smoother and more DWIM.
+`devops.el` uses this basic technique, without requiring any elisp. This makes notebooks easier to read. (and wirte!)
+
+It aims to make the whole experience of using org mode notebooks for infrsatructure tasks smoother and more DWIM.
 
 ## Devops-flavored Org Mode
 
