@@ -83,7 +83,7 @@ The last two can be mitigated using elisp to name remote locations:
 (do-stuff)
 #+end_src
 
-#+begin_src conf :tangle (concat my-server "/.config/service.conf")
+#+begin_src conf :tangle (concat my-server ".config/service.conf")
 (configure-stuff)
 #+end_src
 ```
