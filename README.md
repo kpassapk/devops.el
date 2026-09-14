@@ -53,7 +53,7 @@ api-key: <<API-KEY()>>
 
 (Note the parentheses in `API-KEY()`).
 
-## Limitations
+### Limitations
 
 There are some shortcomings and annoyances, however:
 
@@ -69,6 +69,8 @@ There are some shortcomings and annoyances, however:
 4. When describing an actual production environment, it's easy to end up with duplicate `/ssh:someuser@someserver:somedirectory/...` `:dir` properties all over the file. This is difficult to scan.
 
 5. Tangling ignores `:dir`. If you are uploading a file and then running a server command next to it, now the server needs to go in two places. (`:dir` and `:tangle`)
+
+**Named locations**
 
 The last two can be mitigated using elisp to name remote locations:
 
@@ -88,7 +90,7 @@ The last two can be mitigated using elisp to name remote locations:
 
 This "named location" technique is a great way to organize things, and does not require any additional packages. As long as you remember to execute the elisp block first, you're good to go.
 
-## devops.el
+### devops.el
 
 `devops.el` builds on this basic technique.
 - It lets you work with _named targets_, like the previous example, but without elisp
