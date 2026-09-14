@@ -76,17 +76,21 @@ too, because under `:async' ob-shell returns the whole output instead."
   :group 'devops)
 
 (defcustom devops-session-name-function
-  (lambda (tag _target) (format "devops:%s" tag))
+  (lambda (tag target) (format "devops:%s %s" tag target))
   "Function mapping a target TAG and TARGET to a session name.
 A shell session name is a buffer name in a single global namespace, so a
 bare tag like \"web\" would collide with anything else that picked the
 same word — including another org file whose \"web\" tag points at a
 different host.  Sending commands to the wrong machine is the worst
-failure this package can have, so the default prefixes `devops:'.
+failure this package can have, so the default prefixes `devops:' and
+folds in the resolved TARGET: a session is a shell on one host, and a
+tag whose target moves — a dynamic target, or two files reusing a tag —
+must not reuse a shell that was started somewhere else.
 
-That removes accidental collisions, not deliberate ones.  If two org
-files reuse a tag for different hosts, set this to a function that also
-folds in the target or the buffer name."
+TARGET is used verbatim.  Buffer names take any characters, and two
+TRAMP prefixes that differ textually are two different connections, so
+nothing is gained by normalising it.  Two tags on the identical target
+share a session, which is the same host and directory anyway."
   :type 'function
   :group 'devops)
 
@@ -119,8 +123,12 @@ asks otherwise."
      ,@body))
 
 (defun devops--parse-target-keyword (value)
-  "Parse a #+TARGET value like \"target1 (source)\" into (TAG . TARGET)."
-  (when (string-match "\\`\\([^ ]+\\) +(\\([^)]+\\))\\'" value)
+  "Parse a #+TARGET value like \"target1 (source)\" into (TAG . TARGET).
+TARGET is a directory, a TRAMP prefix, or a reference to a named block
+written in noweb's brackets, `<<NAME>>' or `<<NAME(ARGS)>>'.  A reference
+is kept as written: it is resolved when the tag is looked up, see
+`devops--resolve-target-for-tag'."
+  (when (string-match "\\`\\(<<.*>>\\|[^ ]+\\) +(\\([^)]+\\))\\'" value)
     (cons (match-string 2 value) (match-string 1 value))))
 
 (defun devops--org-keywords (key)
@@ -132,9 +140,62 @@ asks otherwise."
   (delq nil (mapcar #'devops--parse-target-keyword
                     (devops--org-keywords "TARGET"))))
 
+(defun devops-target-ref (target)
+  "Return the reference inside TARGET, a #+TARGET value, or nil if literal.
+For \"<<server-target()>>\" that is \"server-target()\", the form
+`org-babel-ref-resolve' reads."
+  (and (string-match "\\`<<\\(.+\\)>>\\'" target)
+       (match-string 1 target)))
+
+(defvar devops--resolving-tags nil
+  "Tags whose target references are being resolved, innermost first.
+Resolving a reference runs its block, and running a block resolves the
+target of the heading it sits under.  A block under the tag it defines
+would therefore ask for itself without end; the list lets that be an
+error instead.")
+
+(defun devops--target-value-string (value)
+  "Return VALUE, a resolved reference, as a trimmed string, or nil.
+A shell block with `:results value' hands its one line back as a
+one-cell table, which is unwrapped; anything that is not text is nil."
+  (while (and (consp value) (null (cdr value)))
+    (setq value (car value)))
+  (and (stringp value) (string-trim value)))
+
+(defun devops--target-from-ref (tag ref)
+  "Resolve REF, the reference in TAG's #+TARGET keyword, to a target.
+REF is resolved by `org-babel-ref-resolve', so it names a block in this
+buffer and honours whatever advises that function.  As in noweb, a bare
+NAME is the text of a literal block -- an example or fixed-width block --
+and NAME() runs a src block for its value.  A bare NAME that turns out to
+be a src block is refused rather than run, so the keyword says what it
+does.  The value must be one non-empty line: a target is a directory or
+a TRAMP prefix, and anything longer is a block that printed more than
+its answer."
+  (when (member tag devops--resolving-tags)
+    (user-error "Target %s: %s runs under its own tag" tag ref))
+  (when (and (not (string-match-p "(" ref))
+             (org-babel-find-named-block ref))
+    (user-error "Target %s: %s is a src block; write <<%s()>> to run it"
+                tag ref ref))
+  (let* ((devops--resolving-tags (cons tag devops--resolving-tags))
+         (value (devops--target-value-string
+                 (save-excursion (org-babel-ref-resolve ref)))))
+    (when (or (null value)
+              (string-empty-p value)
+              (string-match-p "\n" value))
+      (user-error "Target %s: %s must yield one line, got %S" tag ref value))
+    value))
+
 (defun devops--resolve-target-for-tag (tag)
-  "Look up TAG in #+TARGET keywords, return target name or nil."
-  (cdr (assoc tag (devops-target-tag-alist))))
+  "Look up TAG in #+TARGET keywords, return target name or nil.
+A target written as a reference is resolved here, at lookup, so only the
+tags a heading carries have their blocks run, and a value that changes
+between runs -- a CLI input, a database row -- is read each time."
+  (when-let* ((target (cdr (assoc tag (devops-target-tag-alist)))))
+    (if-let* ((ref (devops-target-ref target)))
+        (devops--target-from-ref tag ref)
+      target)))
 
 (defun devops--heading-target-tags ()
   "Return list of (TAG . TARGET) for all matching tags on current heading.
@@ -150,9 +211,9 @@ Searches heading's tags against all #+TARGET keywords."
   "Return the (TAG . TARGET) in effect for the current heading, or nil.
 If more than one of the heading's tags names a target, use
 completing-read, allowing the user to select one.  The tag is kept
-alongside the target because it, not the directory, is what names the
-session: a tag maps 1:1 to a target, and two tags on the same host mean
-two directories, hence two sessions."
+alongside the target because both name the session, see
+`devops-session-name-function': two tags on the same host mean two
+directories, hence two targets and two sessions."
   (let ((matches (devops--heading-target-tags)))
     (cond
      ((null matches)

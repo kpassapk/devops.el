@@ -192,6 +192,34 @@ jq -r '.services
 
 This will work even if the `jq` command is not installed in the container :)
 
+### Dynamic targets
+
+A `#+TARGET` value can be a noweb-style reference:
+
+```
+#+TARGET: <<server-target()>> (server)
+
+#+name: input-instance
+: app1
+
+#+name: server-target
+#+begin_src sh :results output :var INSTANCE=input-instance
+echo "/ssh:app@$(lookup-server $INSTANCE):"
+#+end_src
+
+* Check free disk space                                 :server:
+
+#+begin_src sh
+df -h /
+#+end_src
+```
+
+In this example, we are checking the disk space in the server that hosts `app1`.
+
+The returned value must be a directory, a TRAMP prefix, or both.
+The block runs on every execution and every tangle under the tag, so
+keep it cheap (to run) and/or cache it.
+
 ## Drift detection
 
 `devops-drift` shows a `*Drift Report*` buffer, telling you whtether code blocks and their 
@@ -246,7 +274,7 @@ the `session` and `async` headers yourself. For example,
 injects these `dir`, `session` and `async` headers:
 
 ```
-#+begin_src sh :results output :dir /ssh:example.com: :session devops:example :async yes
+#+begin_src sh :results output :dir /ssh:example.com: :session "devops:example /ssh:example.com:" :async yes
   apt-get update
 #+end_src
 ```
@@ -261,6 +289,10 @@ Some caveats:
 
 - Only works with `:results output`
 - Can break with fancy prompts. (You're not putting fancy prompts on your servers anyway, right??)
+- Sessions are named `devops:TAG TARGET`, so a tag whose target
+changes between runs (see [dynamic targets](#dynamic-targets)) gets a
+fresh shell on the new host rather than reusing the old one. Set
+`devops-session-name-function` to name them differently.
 
 ### Terminal DWIM command
 
