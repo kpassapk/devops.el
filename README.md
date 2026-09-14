@@ -18,7 +18,7 @@ Org mode, built into emacs, provides support for literate programming via Org Ba
 
 Emacs can run any command in a code block remotely, if it has a remote `:dir` property:
 
-```
+```org
 #+begin_src sh :dir /ssh:server-user@example.com:
 whoami
 #+end_src
@@ -38,7 +38,7 @@ This is not immediately obvious: Noweb, which allows you to splice in named bloc
 
 This is useful for handling secrets:
 
-```
+```org
 #+NAME: API-KEY
 #+BEGIN_SRC sh
 op item get "Some Item" --fields label=credential --reveal
@@ -105,7 +105,7 @@ In general, it makes the whole experience of using org mode notebooks for infrsa
 
 This package works with "targets" defined at the top of the file, which also appear in heading tags:
 
-```
+```org
 #+TARGET: /ssh:example1.com: (server1)
 #+TARGET: /ssh:example2.com: (server2)
 
@@ -115,7 +115,7 @@ This package works with "targets" defined at the top of the file, which also app
 
 Source code blocks under a heading tag that matches a target (a "target tag") execute in on the server, instead of locally:
 
-```
+```org
 #+TARGET: /ssh:example1.com: (server1)
 #+TARGET: /ssh:example2.com: (server2)
 
@@ -141,7 +141,7 @@ target server (`example1.com` / `example2.com`) based on the heading tag (`serve
 
 You can use more than one tag, if a command has multiple targets.
 
-```
+```org
 * Do something on both server1 and server2             :server1:server2:
 
 #+BEGIN_SRC sh
@@ -157,7 +157,7 @@ parallel, though I haven't identified yet how to best do this.
 
 Tangling obeys the same targets. This will create `~/foo.txt` in `server1`:
 
-```
+```org
 * Upload a file to server1                              :server1:
 
 #+BEGIN_SRC txt :tangle "~/foo.txt"
@@ -168,7 +168,7 @@ Tangling obeys the same targets. This will create `~/foo.txt` in `server1`:
 You can tangle a file to multiple servers. This will create `~/foo.txt` on both
 `server1` and `server2`:
 
-```
+```org
 * Upload a file to server1 and server2                  :server1:server2:
 
 #+BEGIN_SRC txt :tangle "~/foo.txt"
@@ -183,13 +183,13 @@ processing the output of the code block.
 
 For example, let's say we have a `TARGET` that points to a Podman container in a server:
 
-```
+```org
 #+TARGET: /ssh:server.com|podman:my-container: (container)
 ```
 
 We can chain together a remote command and a local processing step as follows:
 
-```
+```org
 * Service status                                      :container:
 
 #+NAME: status
@@ -211,15 +211,15 @@ This will work even if the `jq` command is not installed in the container :)
 
 A `#+TARGET` value can be a noweb-style reference:
 
-```
+```org
 #+TARGET: <<server-target()>> (server)
 
 #+name: input-instance
 : app1
 
 #+name: server-target
-#+begin_src sh :results output :var INSTANCE=input-instance
-echo "/ssh:app@$(lookup-server $INSTANCE):"
+#+begin_src elisp :var INSTANCE=input-instance
+(concat "/ssh:app@" (lookup-server INSTANCE) ":")
 #+end_src
 
 * Check free disk space                                 :server:
@@ -276,7 +276,7 @@ placeholder gets replaced with the output.
 When `devops-enable-session-async` is enabled, blocks are executed as if you had written 
 the `session` and `async` headers yourself. For example,
 
-```
+```org
 #+TARGET: /ssh:example.com: (example)
 
 * Update packages :example:
@@ -288,7 +288,7 @@ the `session` and `async` headers yourself. For example,
 
 injects these `dir`, `session` and `async` headers:
 
-```
+```org
 #+begin_src sh :results output :dir /ssh:example.com: :session "devops:example /ssh:example.com:" :async yes
   apt-get update
 #+end_src
