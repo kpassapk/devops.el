@@ -1010,33 +1010,34 @@ replaces the placeholder in the buffer when the command finishes."
   (devops-test--skip-unless-shell-async)
   (let ((devops-enable-session-async t))
     (devops-test--with-local-target target
-      (unwind-protect
-          (devops-test--with-org
-              (format (concat "#+TARGET: %s (local)\n\n"
-                              "* Run\t\t:local:\n\n"
-                              "#+begin_src sh\npwd\n#+end_src\n")
-                      target)
-            (goto-char (point-min))
-            (re-search-forward "begin_src")
-            (let* ((org-confirm-babel-evaluate nil)
-                   (uuid (org-babel-execute-src-block))
-                   (deadline (+ (float-time) 30)))
-              (should (get-buffer "devops:local /srv/app/"))
-              (should (string-match-p "\\`[0-9a-f-]+\\'" uuid))
-              (while (and (< (float-time) deadline)
-                          (save-excursion
-                            (goto-char (point-min))
-                            (search-forward uuid nil t)))
-                (accept-process-output nil 0.2))
+      (let ((session (devops--session-name "local" target)))
+        (unwind-protect
+            (devops-test--with-org
+                (format (concat "#+TARGET: %s (local)\n\n"
+                                "* Run\t\t:local:\n\n"
+                                "#+begin_src sh\npwd\n#+end_src\n")
+                        target)
               (goto-char (point-min))
-              (should-not (search-forward uuid nil t))
-              (should (re-search-forward "^: \\(.+\\)$" nil t))
-              (should (equal (file-name-as-directory
-                              (file-truename (org-trim (match-string 1))))
-                             (file-name-as-directory (file-truename target))))))
-        (when-let* ((buf (get-buffer "devops:local /srv/app/")))
-          (let ((kill-buffer-query-functions nil))
-            (kill-buffer buf)))))))
+              (re-search-forward "begin_src")
+              (let* ((org-confirm-babel-evaluate nil)
+                     (uuid (org-babel-execute-src-block))
+                     (deadline (+ (float-time) 30)))
+                (should (get-buffer session))
+                (should (string-match-p "\\`[0-9a-f-]+\\'" uuid))
+                (while (and (< (float-time) deadline)
+                            (save-excursion
+                              (goto-char (point-min))
+                              (search-forward uuid nil t)))
+                  (accept-process-output nil 0.2))
+                (goto-char (point-min))
+                (should-not (search-forward uuid nil t))
+                (should (re-search-forward "^: \\(.+\\)$" nil t))
+                (should (equal (file-name-as-directory
+                                (file-truename (org-trim (match-string 1))))
+                               (file-name-as-directory (file-truename target))))))
+          (when-let* ((buf (get-buffer session)))
+            (let ((kill-buffer-query-functions nil))
+              (kill-buffer buf))))))))
 
 (ert-deftest devops-session-async-var-reference-test ()
   "A `:var' naming another block gets that block's output, not a placeholder.
