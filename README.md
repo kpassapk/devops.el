@@ -59,18 +59,36 @@ There are some shortcomings and annoyances, however:
 
 1. Long-running commands (like `apt-get update`) can lock up emacs for an extended period of time. In devops workflows, most of the work is remote, so the experience is... choppy. Even worse, if a command asks for input your emacs might become unresponsive.
 
-2. When describing an actual production environment, it's easy to end up with duplicate `/ssh:someuser@someserver:somedirectory/...` `:dir` properties all over the file. This is difficult to scan.
-
-3. Each source block can only have a single `:dir`. This makes the following typical use cases difficult:
+2. Each source block can only have a single `:dir`. This makes the following typical use cases difficult:
 
   - Uploading the same content to multiple servers
   - Running the same command on multiple servers
 
-4. Tangling ignores `:dir`. If you are uploading a file and then running a server command, now the server needs to go in two places. (`:dir` and `:tangle`)
+3. tangling scope is either too small or to wide. The `org-babel-tangle` function tangles the entire buffer by default, or alternatively a single source code block. Tangling an entire buffer might be risky, and tangling every single block gets annoying.
 
-5. tangling scope is either too small or to wide. The `org-babel-tangle` function tangles the entire buffer by default, or alternatively a single source code block. Tangling an entire buffer might be risky, and tangling a single block gets very annoying.
+4. When describing an actual production environment, it's easy to end up with duplicate `/ssh:someuser@someserver:somedirectory/...` `:dir` properties all over the file. This is difficult to scan.
 
-This library provides functionality to better support devops-like workflows. It does this by applying some conventions on top of org mode.
+5. Tangling ignores `:dir`. If you are uploading a file and then running a server command next to it, now the server needs to go in two places. (`:dir` and `:tangle`)
+
+The last two can be mitigated using elisp:
+
+```
+#+begin_src emacs-lisp
+(setq-local my-server "/ssh:example1.com:")
+#+end_src
+
+#+begin_src sh :dir (identity my-server)
+(do-stuff)
+#+end_src
+
+#+begin_src conf :tangle (concat my-server "/.config/service.conf")
+(configure-stuff)
+#+end_src
+```
+
+This "named location" technique is a great way to organize things, and does not require any additional packages. As long as you remember to execute the elisp block first, you're good to go.
+
+`devops.el` builds on this basic technique. It aims to make the whole experience of using org mode notebooks for infrsatructure tasks smoother and more DWIM.
 
 ## Devops-flavored Org Mode
 
