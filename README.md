@@ -217,16 +217,18 @@ for scripting.
 
 ## Shell async sessions (experimental)
 
-There are seveeral options for running background commands in emacs asynchronously:
+There are several options for running background commands in emacs asynchronously:
 
 1. [ob-async](https://github.com/astahlman/ob-async)
 2. [ob-screen](https://howardism.org/Technical/Emacs/literate-devops.html#fnr.4)
 3. [detached.el](https://sr.ht/~niklaseklund/detached.el)
 
-To avoid dependnecies, `devops.el` uses built-in features and tries to make them more 
-convenient.
+In recent org mode versions (Org 9.7+), `ob-shell` provides a built-in
+async mechanism. Source blocks with `:session foo :async yes` will
+print a [UUID placeholder][ob-shell-uuid]. Once the background command finishes, the
+placeholder gets replaced with the output.
 
-In recent org mode versions, (Org 9.7+), executing source blocks with `:session foo :async yes` will print a placeholder. Once the background command finishes, the placehodler gets replaced with the output.
+[ob-shell-uuid]: https://github.com/emacs-straight/org/blob/master/ob-shell.el#L381C32-L381C43
 
 When `devops-enable-session-async` is enabled, blocks are executed as if you had written 
 the `session` and `async` headers yourself. For example,
@@ -249,20 +251,16 @@ injects these `dir`, `session` and `async` headers:
 #+end_src
 ```
 
-(Only works with `:results output` I think. You will probably want to set this at top of file.
-See [](examples/1_commands.org))
-
-This is off by default because it makes blocks stateful. Commands like `cd` now survive 
-from one block to the next. To enable, set
+To enable, set `devops-enable-session-async`.
 
 ```elisp
 (setq devops-enable-session-async t)
 ```
 
-Session names come from `devops-session-name-function`, which defaults to
-`devops:<tag>`. A session name is a buffer name in a single global namespace, so
-if two org files use the same tag for different hosts, set this to a function
-that also folds in the project, target or buffer name.
+Some caveats:
+
+- Only works with `:results output`
+- Can break with fancy prompts. (You're not putting fancy prompts on your servers anyway, right??)
 
 ### Terminal DWIM command
 

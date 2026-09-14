@@ -69,7 +69,9 @@ back to a known state.
 
 Shell blocks need Org 9.7 or newer, where `ob-shell' learned `:async';
 under an older org this option leaves them alone rather than putting
-them in a session it cannot run asynchronously."
+them in a session it cannot run asynchronously.  A shell block with
+`:results value' — whose result is its exit status — runs synchronously
+too, because under `:async' ob-shell returns the whole output instead."
   :type 'boolean
   :group 'devops)
 
@@ -295,6 +297,38 @@ also keeps Emacs 29 working once org is upgraded from ELPA."
            (boundp 'ob-shell-async-indicator))
     t))
 
+(defun devops--result-params (params)
+  "Return the list of result parameters in PARAMS, or nil.
+Processed header arguments carry `:result-params' ready-made; the
+unprocessed ones `org-babel-get-src-block-info' returns under `no-eval'
+only have the `:results' string, which is split the way
+`org-babel-process-params' would."
+  (or (cdr (assq :result-params params))
+      (when-let* ((results (cdr (assq :results params))))
+        (split-string results))))
+
+(defun devops--shell-value-p (lang params block-params)
+  "Non-nil when a shell block's result is its exit status.
+LANG is the block's language; PARAMS and BLOCK-PARAMS are as in
+`devops--header-cell'.  Mirrors the `value-is-exit-status' test in
+`org-babel-sh-evaluate': `:results value' asks for it outright, and a
+bare `:results replace' means it when
+`org-babel-shell-results-defaults-to-output' is off.
+
+Under `:async' ob-shell gets this wrong.  The exit status is the last
+line of the session's output, and the trim that keeps only that line
+runs on the UUID placeholder returned at once, not on the output that
+arrives later — so the results block fills with everything the block
+printed, exit status last.  Such a block is run synchronously instead."
+  (when (member lang '("sh" "bash" "shell"))
+    (let ((result-params
+           (or (devops--result-params params)
+               (devops--result-params block-params))))
+      (or (member "value" result-params)
+          (and (equal '("replace") result-params)
+               (not (bound-and-true-p
+                     org-babel-shell-results-defaults-to-output)))))))
+
 (defun devops--async-session-cells (params block-params lang tag target)
   "Return the :session and :async header cells to inject, or nil.
 PARAMS and BLOCK-PARAMS are as in `devops--header-cell', LANG is the
@@ -302,7 +336,8 @@ block's language, and TAG and TARGET the heading's resolved target.
 Nothing is injected unless `devops-enable-session-async' is on, LANG is
 in `devops-async-session-languages' and supported by the running org
 \(see `devops--lang-async-p'), and we are executing on the user's
-behalf rather than under `devops-with-sync'.
+behalf rather than under `devops-with-sync'.  A shell block whose result
+is its exit status is left alone too; see `devops--shell-value-p'.
 
 What the block already says is left alone, so per-block escape hatches
 need no new syntax: `:async no' runs one block synchronously in the
@@ -311,7 +346,8 @@ and `:session other' attaches it to a session of the user's choosing."
   (when (and devops-enable-session-async
              (not devops--inhibit-async)
              (member lang devops-async-session-languages)
-             (devops--lang-async-p lang))
+             (devops--lang-async-p lang)
+             (not (devops--shell-value-p lang params block-params)))
     (let* ((declared (devops--session-declared-p params block-params lang))
            (session (cdr (devops--header-cell :session params block-params))))
       (unless (and declared (equal session "none"))

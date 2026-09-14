@@ -762,6 +762,57 @@ worse than it does with no session at all."
         (should (equal (cdr (assq :session params)) "devops:local"))
         (should (equal (cdr (assq :async params)) "no"))))))
 
+(ert-deftest devops-session-async-results-value-stays-sync-test ()
+  "A shell block with `:results value' gets :dir but no session or async.
+Under `:async' ob-shell returns the whole output rather than the exit
+status the block asked for; see `devops--shell-value-p'."
+  (devops-test--skip-unless-shell-async)
+  (let ((devops-enable-session-async t))
+    (devops-test--with-session-org ":results value"
+      (let ((params (devops-test--executor-params "sh")))
+        (should (equal (cdr (assq :dir params)) "/srv/app/"))
+        (should (equal (cdr (assq :session params)) "none"))
+        (should-not (assq :async params))))))
+
+(ert-deftest devops-session-async-results-output-injects-test ()
+  "A shell block with `:results output' still gets its session and async."
+  (devops-test--skip-unless-shell-async)
+  (let ((devops-enable-session-async t))
+    (devops-test--with-session-org ":results output"
+      (let ((params (devops-test--executor-params "sh")))
+        (should (equal (cdr (assq :session params)) "devops:local"))
+        (should (equal (cdr (assq :async params)) "yes"))))))
+
+(ert-deftest devops-session-async-default-results-follow-ob-shell-test ()
+  "A bare `:results replace' is value or output as ob-shell decides.
+`org-babel-shell-results-defaults-to-output' makes a shell block's default
+result its output; off, the default is its exit status and the block
+stays synchronous."
+  (devops-test--skip-unless-shell-async)
+  (let ((devops-enable-session-async t))
+    (let ((org-babel-shell-results-defaults-to-output t))
+      (devops-test--with-session-org ""
+        (should (equal (cdr (assq :async (devops-test--executor-params "sh")))
+                       "yes"))))
+    (let ((org-babel-shell-results-defaults-to-output nil))
+      (devops-test--with-session-org ""
+        (should-not (assq :async (devops-test--executor-params "sh")))))))
+
+(ert-deftest devops--shell-value-p-test ()
+  "Only shell languages have an exit-status result to protect."
+  (should (devops--shell-value-p "sh" nil '((:result-params "value"))))
+  (should (devops--shell-value-p "bash" '((:results . "value")) nil))
+  (should (devops--shell-value-p "shell" '((:result-params "value" "replace"))
+                                 nil))
+  (should (devops--shell-value-p "sh" nil '((:results . "value replace"))))
+  (should-not (devops--shell-value-p "sh" nil '((:result-params "output"))))
+  (should-not (devops--shell-value-p "sh" nil '((:results . "output"))))
+  (should-not (devops--shell-value-p "python" nil '((:result-params "value"))))
+  (let ((org-babel-shell-results-defaults-to-output t))
+    (should-not (devops--shell-value-p "sh" nil '((:result-params "replace")))))
+  (let ((org-babel-shell-results-defaults-to-output nil))
+    (should (devops--shell-value-p "sh" nil '((:result-params "replace"))))))
+
 (ert-deftest devops-session-async-from-property-test ()
   "A `:session' inherited from a `header-args' property counts as explicit."
   (let ((devops-enable-session-async t))
