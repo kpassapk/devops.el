@@ -285,14 +285,10 @@ To enable, set `devops-enable-session-async`.
 (setq devops-enable-session-async t)
 ```
 
-Some caveats:
+Caveats:
 
 - Only works with `:results output`
 - Can break with fancy prompts. (You're not putting fancy prompts on your servers anyway, right??)
-- Sessions are named `devops:TAG TARGET`, so a tag whose target
-changes between runs (see [dynamic targets](#dynamic-targets)) gets a
-fresh shell on the new host rather than reusing the old one. Set
-`devops-session-name-function` to name them differently.
 
 ### Terminal DWIM command
 
