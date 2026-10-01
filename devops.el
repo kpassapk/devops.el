@@ -48,16 +48,16 @@
   :prefix "devops-")
 
 (defcustom devops-terminal-program 'ghostty
-  "Terminal program to use for externally opening target locations"
+  "Terminal program to use for externally opening target locations."
   :type '(choice (const ghostty))
   :group 'devops)
 
 (defcustom devops-enable-session-async nil
   "When non-nil, run blocks under a target-tagged heading in an async session.
 A src block then gets `:session' and `:async' injected alongside its
-`:dir', so emacs returns immediately with a placeholder and the output
+`:dir', so Emacs returns immediately with a placeholder and the output
 lands in the results block when the command finishes.  A command that
-asks a question waits in the session buffer instead of hanging emacs;
+asks a question waits in the session buffer instead of hanging Emacs;
 `devops-goto-session' goes there.
 
 Off by default, because a session makes blocks stateful: `cd', `export',
@@ -123,7 +123,7 @@ asks otherwise."
      ,@body))
 
 (defun devops--parse-target-keyword (value)
-  "Parse a #+TARGET value like \"target1 (source)\" into (TAG . TARGET).
+  "Parse a #+TARGET VALUE like \"target1 (source)\" into (TAG . TARGET).
 TARGET is a directory, a TRAMP prefix, or a reference to a named block
 written in noweb's brackets, `<<NAME>>' or `<<NAME(ARGS)>>'.  A reference
 is kept as written: it is resolved when the tag is looked up, see
@@ -210,7 +210,7 @@ Searches heading's tags against all #+TARGET keywords."
 (defun devops--heading-target ()
   "Return the (TAG . TARGET) in effect for the current heading, or nil.
 If more than one of the heading's tags names a target, use
-completing-read, allowing the user to select one.  The tag is kept
+`completing-read', allowing the user to select one.  The tag is kept
 alongside the target because both name the session, see
 `devops-session-name-function': two tags on the same host mean two
 directories, hence two targets and two sessions."
@@ -230,7 +230,7 @@ directories, hence two targets and two sessions."
 
 (defun devops--heading-target-dir ()
   "Return :dir from the current heading's tags and #+TARGET mappings.
-If there is more than one target, use completing-read, allowing the
+If there is more than one target, use `completing-read', allowing the
 user to select one."
   (cdr (devops--heading-target)))
 
@@ -327,6 +327,8 @@ Returns nil when point is not on a src block."
 
 (defun devops--session-declared-p (params block-params lang)
   "Non-nil when the block, not org, decided its `:session'.
+PARAMS are the merged header arguments, BLOCK-PARAMS the block's own
+and LANG its language.
 `org-babel-default-header-args' gives every block `:session none', so the
 merged header arguments cannot tell a block that opted out of sessions
 from one that never mentioned them.  Any other value had to be written by
@@ -350,7 +352,7 @@ worth avoiding."
 `ob-shell' gained `:async' in Org 9.7.  On older org the header argument
 is not merely unsupported but silently ignored, and the block runs
 synchronously in the comint session — worse than no session at all,
-since a command that asks a question then blocks emacs inside a buffer
+since a command that asks a question then blocks Emacs inside a buffer
 the user never sees.  Probing the feature rather than the org version
 also keeps Emacs 29 working once org is upgraded from ELPA."
   (if (member lang '("sh" "bash" "shell"))
@@ -711,7 +713,7 @@ target tags."
   "Tangle the subtree titled HEADLINE in SOURCE-BUF, noninteractively.
 Locate HEADLINE with `org-find-exact-headline-in-buffer', then tangle it
 exactly as `devops-tangle' would with point on that heading.  Return a list
-of (TAG TARGET N) results.  SOURCE-BUF must be an org-mode buffer.
+of (TAG TARGET N) results.  SOURCE-BUF must be an `org-mode' buffer.
 
 Surrounding whitespace in HEADLINE is ignored, so a selector taken straight
 from a `:results output' block (which carries a trailing newline) still
@@ -729,7 +731,7 @@ Locate it with `org-find-property', then tangle it exactly as `devops-tangle'
 would with point on that heading.  Unlike `devops-tangle-headline', the
 selector is stable across title edits and unambiguous when several headings
 share a title.  Return a list of (TAG TARGET N) results.  SOURCE-BUF must be
-an org-mode buffer.
+an `org-mode' buffer.
 
 Surrounding whitespace in CUSTOM-ID is ignored, so a selector taken straight
 from a `:results output' block (which carries a trailing newline) still
@@ -744,7 +746,7 @@ matches."
 (defun devops-tangle-all (source-buf)
   "Tangle every target-tagged heading in SOURCE-BUF, noninteractively.
 Return a list of (TAG TARGET N) results, like `devops-tangle' with a prefix
-argument.  SOURCE-BUF must be an org-mode buffer."
+argument.  SOURCE-BUF must be an `org-mode' buffer."
   (with-current-buffer source-buf
     (devops--tangle-spec-execute source-buf (devops--tangle-spec t))))
 
@@ -768,8 +770,9 @@ like any other path in this buffer, rather than one file per target."
               (devops--tangle-spec))))))
 
 (defun devops-visit-file (&optional arg)
-  "Go to file at of source code block at point.
-With a prefix arg, "
+  "Visit the file the source code block at point tangles to.
+If the block tangles to several files, prompt for one; with prefix
+ARG, visit it in another window."
   (interactive "P")
   (let ((paths (devops--tangle-paths)))
     (cond
@@ -806,6 +809,9 @@ Filter by REGEXP if provided."
                       org-babel-library-of-babel)))
 
 (defun devops--ghostty-command (dir &optional env-vars)
+  "Return a ghostty command line opening a shell in DIR.
+DIR may be remote, in which case ghostty runs ssh to its host.  ENV-VARS
+is an alist of (NAME . VALUE) exported in that shell."
   (let ((env-exports (when env-vars
                        (mapconcat
                         (lambda (pair)
@@ -835,10 +841,11 @@ Filter by REGEXP if provided."
         `("ghostty" ,(concat "--working-directory=" dir))))))
 
 (defun devops--open-terminal-at-dir (dir &optional env-vars)
+  "Open `devops-terminal-program' in DIR with ENV-VARS exported."
   (pcase devops-terminal-program
     ('ghostty
      (let ((ghostty (devops--ghostty-command dir env-vars)))
-       (message (format "Calling process:\n%s" (string-join ghostty " ")))
+       (message "Calling process:\n%s" (string-join ghostty " "))
        (apply #'start-process "devops-terminal" nil ghostty)))))
 
 (defun devops-src-block-env-vars ()
@@ -858,7 +865,8 @@ Filter by REGEXP if provided."
                             (cons (format "%s" name) value))))
                       params))))))
 
-(defun devops--src-block-tangle-header () 
+(defun devops--src-block-tangle-header ()
+  "Return the :tangle header argument of the src block at point, or nil."
   (let ((block-info (org-babel-get-src-block-info 'light)))
     (when block-info
       (let ((header-args (nth 2 block-info)))
