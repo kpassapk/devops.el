@@ -422,7 +422,7 @@ and `:session other' attaches it to a session of the user's choosing."
            (list (cons :async "yes"))))))))
 
 (defun devops--inject-header-args-from-tags (args)
-  "Advise org-babel-execute-src-block to inject :dir from #+TARGET tags.
+  "Advise `org-babel-execute-src-block' to inject :dir from #+TARGET tags.
 An explicit :dir wins: the heading's target is neither resolved nor
 prompted for when the block already carries one.  `:target nil' opts the
 block out of the heading's target without naming a directory, leaving
