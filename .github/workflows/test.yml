@@ -14,16 +14,6 @@ jobs:
         with:
           version: ${{ matrix.emacs-version }}
 
-      - name: Install dependencies
-        run: |
-          emacs --batch --eval "
-          (progn
-            (require 'package)
-            (add-to-list 'package-archives '(\"melpa\" . \"https://melpa.org/packages/\"))
-            (package-initialize)
-            (package-refresh-contents)
-            (package-install 'magit))"
-
       - name: Run tests
         run: |
           emacs --batch \
