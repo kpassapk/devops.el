@@ -3,6 +3,7 @@
 ;; Copyright (C) 2026 Kyle S Passarelli
 
 ;; Author: Kyle S Passarelli <kyle.passarelli@gmail.com>
+;; Assisted-by: Claude:claude-opus-5-5
 ;; URL: https://github.com/kpassapk/devops.el
 
 ;; This package is free software; you can redistribute it and/or modify
