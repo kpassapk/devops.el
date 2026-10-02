@@ -7,7 +7,7 @@
 ;; Maintainer: Kyle S Passarelli <kyle.passarelli@gmail.com>
 ;; URL: https://github.com/kpassapk/devops.el
 ;; Version: 0.1.0
-;; Package-Requires: ((emacs "29.1"))
+;; Package-Requires: ((emacs "30.1"))
 ;; Keywords: tools, processes, outlines
 
 ;; This package is free software; you can redistribute it and/or modify
@@ -28,13 +28,9 @@
 ;; `devops.el' offers utilities for running commands on local and remote
 ;; machines using org mode.
 ;;
-;; The package itself needs nothing newer than the org bundled with Emacs
-;; 29.  `devops-enable-session-async' is the exception: running shell
-;; blocks asynchronously needs the `:async' support `ob-shell' gained in
-;; Org 9.7 (Emacs 30.1), and turns itself off under an older org rather
-;; than putting blocks in a session it cannot drive.  Hence no (org "9.7")
-;; in Package-Requires: an optional feature should not force everyone to
-;; replace their built-in org.
+;; Emacs 30.1 is the baseline, so the bundled org is 9.7 or newer: that
+;; is where `ob-shell' gained the `:async' support
+;; `devops-enable-session-async' relies on.
 
 ;;; Code:
 
@@ -69,9 +65,7 @@ dirty session may fail in a fresh one, so prefer blocks that do not
 depend on the ones above them, and use `devops-restart-session' to get
 back to a known state.
 
-Shell blocks need Org 9.7 or newer, where `ob-shell' learned `:async';
-under an older org this option leaves them alone rather than putting
-them in a session it cannot run asynchronously.  A shell block with
+A shell block with
 `:results value' — whose result is its exit status — runs synchronously
 too, because under `:async' ob-shell returns the whole output instead."
   :type 'boolean
@@ -327,19 +321,6 @@ worth avoiding."
              (let ((own (devops--user-header-args lang)))
                (or (null own) (assq :session own)))))))
 
-(defun devops--lang-async-p (lang)
-  "Non-nil when org can evaluate LANG asynchronously in a session.
-`ob-shell' gained `:async' in Org 9.7.  On older org the header argument
-is not merely unsupported but silently ignored, and the block runs
-synchronously in the comint session — worse than no session at all,
-since a command that asks a question then blocks Emacs inside a buffer
-the user never sees.  Probing the feature rather than the org version
-also keeps Emacs 29 working once org is upgraded from ELPA."
-  (if (member lang '("sh" "bash" "shell"))
-      (and (require 'ob-shell nil t)
-           (boundp 'ob-shell-async-indicator))
-    t))
-
 (defun devops--result-params (params)
   "Return the list of result parameters in PARAMS, or nil.
 Processed header arguments carry `:result-params' ready-made; the
@@ -377,8 +358,7 @@ printed, exit status last.  Such a block is run synchronously instead."
 PARAMS and BLOCK-PARAMS are as in `devops--header-cell', LANG is the
 block's language, and TAG and TARGET the heading's resolved target.
 Nothing is injected unless `devops-enable-session-async' is on, LANG is
-in `devops-async-session-languages' and supported by the running org
-\(see `devops--lang-async-p'), and we are executing on the user's
+in `devops-async-session-languages', and we are executing on the user's
 behalf rather than under `devops-with-sync'.  A shell block whose result
 is its exit status is left alone too; see `devops--shell-value-p'.
 
@@ -389,7 +369,6 @@ and `:session other' attaches it to a session of the user's choosing."
   (when (and devops-enable-session-async
              (not devops--inhibit-async)
              (member lang devops-async-session-languages)
-             (devops--lang-async-p lang)
              (not (devops--shell-value-p lang params block-params)))
     (let* ((declared (devops--session-declared-p params block-params lang))
            (session (cdr (devops--header-cell :session params block-params))))

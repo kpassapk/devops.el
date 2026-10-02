@@ -26,7 +26,7 @@ make clean           # remove .elc
 ```
 
 Run `make compile` and `make test` before calling something done. CI runs
-the suite on Emacs 29.4 and 30.1.
+the suite on Emacs 30.1.
 
 `make` puts batch Emacs under a watchdog (`perl -e 'alarm shift; exec
 @ARGV' N`), because ERT in batch mode can hang on a stdin prompt or a loop.
@@ -36,10 +36,11 @@ in preference to the edited source.
 
 ## Compatibility
 
-- `Package-Requires: ((emacs "29.1"))`, so the baseline is Org 9.6.
-  Anything newer, such as `ob-shell` `:async` in Org 9.7, has to check for
-  support and degrade (see `devops-enable-session-async`). Don't raise the
-  requirement for an optional feature.
+- `Package-Requires: ((emacs "30.1"))`, so the baseline is the Org 9.7
+  bundled with it. Your local Org may be newer, so a test passing locally
+  doesn't prove it runs on 9.7. Check any Org function you call against
+  Emacs 30.1's `lisp/org`. For example, `org-base-buffer-file-name` only
+  exists in later versions.
 - `(require 'tramp)` is explicit because tests run under `emacs -Q`, where
   the autoloads aren't enough.
 

@@ -783,17 +783,6 @@ Return the header arguments the executor was handed, so an injected
      (re-search-forward "begin_src")
      ,@body))
 
-(defun devops-test--skip-unless-shell-async ()
-  "Skip the calling test unless org can run a shell block asynchronously.
-`ob-shell' gained `:async' in Org 9.7.  Under the Org 9.6 that Emacs 29
-bundles, `devops--lang-async-p' turns the injection off, so there is no
-session and no placeholder to assert on.
-
-`ert-skip' rather than `skip-unless': the latter is gone on Emacs 31 and
-its replacement `ert-skip-unless' does not exist on 29."
-  (unless (devops--lang-async-p "sh")
-    (ert-skip "ob-shell has no :async support (needs Org 9.7)")))
-
 (ert-deftest devops-session-async-off-by-default-test ()
   "Without `devops-enable-session-async', no session or async is injected."
   (devops-test--with-session-org ""
@@ -804,7 +793,6 @@ its replacement `ert-skip-unless' does not exist on 29."
 
 (ert-deftest devops-session-async-injects-session-and-async-test ()
   "With the option on, a block gets `:session devops:TAG TARGET' and `:async yes'."
-  (devops-test--skip-unless-shell-async)
   (let ((devops-enable-session-async t))
     (devops-test--with-session-org ""
       (let ((params (devops-test--executor-params "sh")))
@@ -812,31 +800,8 @@ its replacement `ert-skip-unless' does not exist on 29."
         (should (equal (cdr (assq :session params)) "devops:local /srv/app/"))
         (should (equal (cdr (assq :async params)) "yes"))))))
 
-(ert-deftest devops-session-async-unsupported-language-test ()
-  "An org whose `ob-shell' has no `:async' gets neither session nor async.
-Injecting `:session' alone would leave the block running synchronously
-inside a comint buffer the user never sees, so a prompt would hang emacs
-worse than it does with no session at all."
-  (let ((devops-enable-session-async t))
-    (cl-letf (((symbol-function 'devops--lang-async-p) #'ignore))
-      (devops-test--with-session-org ""
-        (let ((params (devops-test--executor-params "sh")))
-          (should (equal (cdr (assq :dir params)) "/srv/app/"))
-          (should (equal (cdr (assq :session params)) "none"))
-          (should-not (assq :async params)))))))
-
-(ert-deftest devops--lang-async-p-test ()
-  "The probe answers for shell from `ob-shell', and yes for anything else."
-  (should (eq (devops--lang-async-p "sh") (devops--lang-async-p "bash")))
-  (should (devops--lang-async-p "python"))
-  (should (equal (devops--lang-async-p "sh")
-                 (and (require 'ob-shell nil t)
-                      (boundp 'ob-shell-async-indicator)
-                      t))))
-
 (ert-deftest devops-session-name-function-test ()
   "`devops-session-name-function' decides the session name."
-  (devops-test--skip-unless-shell-async)
   (let ((devops-enable-session-async t)
         (devops-session-name-function
          (lambda (tag target) (format "%s@%s" tag target))))
@@ -846,7 +811,6 @@ worse than it does with no session at all."
 
 (ert-deftest devops-session-async-explicit-session-wins-test ()
   "A `:session' on the block is not overwritten by the tag's session."
-  (devops-test--skip-unless-shell-async)
   (let ((devops-enable-session-async t))
     (devops-test--with-session-org ":session other"
       (let ((params (devops-test--executor-params "sh")))
@@ -863,7 +827,6 @@ worse than it does with no session at all."
 
 (ert-deftest devops-session-async-explicit-async-no-test ()
   "`:async no' runs one block synchronously while keeping its session."
-  (devops-test--skip-unless-shell-async)
   (let ((devops-enable-session-async t))
     (devops-test--with-session-org ":async no"
       (let ((params (devops-test--executor-params "sh")))
@@ -874,7 +837,6 @@ worse than it does with no session at all."
   "A shell block with `:results value' gets :dir but no session or async.
 Under `:async' ob-shell returns the whole output rather than the exit
 status the block asked for; see `devops--shell-value-p'."
-  (devops-test--skip-unless-shell-async)
   (let ((devops-enable-session-async t))
     (devops-test--with-session-org ":results value"
       (let ((params (devops-test--executor-params "sh")))
@@ -884,7 +846,6 @@ status the block asked for; see `devops--shell-value-p'."
 
 (ert-deftest devops-session-async-results-output-injects-test ()
   "A shell block with `:results output' still gets its session and async."
-  (devops-test--skip-unless-shell-async)
   (let ((devops-enable-session-async t))
     (devops-test--with-session-org ":results output"
       (let ((params (devops-test--executor-params "sh")))
@@ -896,7 +857,6 @@ status the block asked for; see `devops--shell-value-p'."
 `org-babel-shell-results-defaults-to-output' makes a shell block's default
 result its output; off, the default is its exit status and the block
 stays synchronous."
-  (devops-test--skip-unless-shell-async)
   (let ((devops-enable-session-async t))
     (let ((org-babel-shell-results-defaults-to-output t))
       (devops-test--with-session-org ""
@@ -1002,7 +962,6 @@ land in the tangled file on the server."
 The end-to-end path: the heading's tag names a shell session, the block
 runs there at the target's directory, and `org-babel-comint-async-filter'
 replaces the placeholder in the buffer when the command finishes."
-  (devops-test--skip-unless-shell-async)
   (let ((devops-enable-session-async t))
     (devops-test--with-local-target target
       (let ((session (devops--session-name "local" target)))
@@ -1043,7 +1002,6 @@ Which wrong answer lands in the buffer depends on timing: \"hi UUID\"
 when the reference's output arrives first, or the reference's own output
 when it arrives second and `org-babel-comint-async-filter' finds its
 UUID inside the caller's freshly inserted result."
-  (devops-test--skip-unless-shell-async)
   (let ((devops-enable-session-async t))
     (devops-test--with-local-target target
       (unwind-protect
@@ -1083,7 +1041,6 @@ goes through `org-babel-ref-resolve' and executes the `name' block with
 point on it, where the advice injects `:async'.  The same happens when
 the called block's own `:var' names a block that the call does not
 override (issue #14)."
-  (devops-test--skip-unless-shell-async)
   (let ((devops-enable-session-async t))
     (devops-test--with-local-target target
       (unwind-protect
