@@ -71,6 +71,26 @@ Probably better to implement a =devops-tangle= command, rather than advice on =o
 A full buffer copy ensures =:var= refs to named blocks outside heading resolve
 correctly. (Even if we're narrowing and only executing the current heading.)
 
+*** Revisited 2026-10-02: redirect the plan, not the text
+
+The copy existed so that =:tangle= headers could be rewritten as text, and so
+that per-server =#+name: FOO (tag)= blocks could be renamed before noweb
+resolved them. Both were brittle: header regexps missed inherited =:tangle=
+values, and the temp file leaked into =:tangle yes= and =:comments link=.
+
+=devops-tangle= is still its own command, but it now narrows the org buffer
+itself and leaves its text alone. =org-babel-tangle-collect-blocks= returns
+the write plan as data, =((FILE (LANG . SPEC) ...) ...)=, with each block's
+merged params in the spec. A =:filter-return= advice rewrites =FILE= per
+block when =devops--tangle-redirect= is bound, and does nothing otherwise.
+Org still does all the writing (=:mkdirp=, =:shebang=, =:tangle-mode=).
+=save-buffer= is dropped from =org-babel-pre-tangle-hook= for the duration,
+so tangling never saves the org file.
+
+Per-server noweb blocks were dropped. Without a copy there is nothing safe
+to rename. Content that differs per server goes under a separate heading
+for each server.
+
 ** 2. Use =:tangle= header
 
 Which header argument should =devops-tangle= command use to determine the target server?
