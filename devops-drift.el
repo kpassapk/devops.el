@@ -23,7 +23,7 @@
 ;;
 ;; Detect drift between an org file's source blocks and the files they
 ;; tangle to on their targets.  Because blocks can contain noweb
-;; references (including per-server ones), the org file is tangled to a
+;; references, the org file is tangled to a
 ;; local temporary directory first, then each tangled file is compared
 ;; byte-for-byte with its remote counterpart.
 ;;
@@ -61,90 +61,51 @@ part, so \"/ssh:host:~/foo\" also becomes \"home/foo\"."
       (substring path 1))
      (t path))))
 
-(defun devops--drift-rewrite-tangle-paths (target local-root)
-  "Rewrite :tangle paths in buffer to land under LOCAL-ROOT.
-Return a list of (PATH LOCAL REMOTE) in buffer order, where PATH is the
-original :tangle value, LOCAL the rewritten local file and REMOTE the
-file the path denotes at TARGET.  A PATH that is already a TRAMP path
-keeps itself as REMOTE but is still redirected to LOCAL-ROOT: a drift
-check must never write to a remote.  Skips :tangle no and :tangle yes.
+(defun devops--drift-destination (target local-root path params)
+  "Return (LOCAL . REMOTE) for a block with :tangle PATH, or nil.
+LOCAL is the file under LOCAL-ROOT the block is tangled to for the
+check and REMOTE the file PATH denotes at TARGET.  A PATH that is
+already a TRAMP path keeps itself as REMOTE but is still tangled under
+LOCAL-ROOT: a drift check must never write to a remote.  PARAMS are the
+block's header arguments.
 
-A block that opted out with `:target nil' has no target to be compared
-against, so it is left out of the mapping and its header is neutralized
-to :tangle no.  Neutralizing it matters as much as omitting it: the
-block's own path is a real local file, and tangling it here would make a
-read-only check write to the user's filesystem.
-
-Modifies buffer text."
-  (let ((opted-out (devops--target-opted-out-regions))
-        mapping)
-    (save-excursion
-      (goto-char (point-max))
-      (while (re-search-backward ":tangle +\\([^ \t\n]+\\)" nil t)
-        ;; Computing remote/local paths runs regexps of its own, so take
-        ;; the match apart before touching them (`replace-match' would
-        ;; see clobbered match data).
-        (let ((beg (match-beginning 0))
-              (end (match-end 0))
-              (path (match-string 1)))
-          (unless (member path '("no" "yes"))
-            (if (devops--in-regions-p beg opted-out)
-                (progn
-                  (delete-region beg end)
-                  (goto-char beg)
-                  (insert ":tangle no"))
-              (let ((remote (if (tramp-tramp-file-p path)
-                                path
-                              (devops--join-target target path)))
-                    (local (expand-file-name
-                            (devops--drift-localize-path path) local-root)))
-                (delete-region beg end)
-                (goto-char beg)
-                (insert ":tangle " local)
-                (push (list path local remote) mapping)))
-            ;; Step before the rewrite so the backward search keeps
-            ;; making progress (the rewritten path matches the regexp).
-            (goto-char beg)))))
-    mapping))
+Nil leaves the block out of the check altogether, and out of the
+tangle: `:tangle yes' names a file next to the org file, and a block
+that opted out with `:target nil' has no target to be compared against
+and its own path is a real local file.  Tangling either would make a
+read-only check write to the user's filesystem."
+  (unless (or (string= path "yes")
+              (devops--target-opted-out-p nil params))
+    (cons (expand-file-name (devops--drift-localize-path path) local-root)
+          (if (tramp-tramp-file-p path)
+              path
+            (devops--join-target target path)))))
 
 (defun devops--drift-tangle-heading (source-buf heading-pos tag target local-root)
   "Tangle subtree at HEADING-POS from SOURCE-BUF into LOCAL-ROOT.
-TAG selects per-server noweb blocks, exactly as in `devops--tangle-heading'.
 Files land under LOCAL-ROOT/TAG so the same :tangle path tangled for two
-servers (with different noweb content) cannot collide.  Return a list of
-drift entries, plists with :tag :target :path :local :remote :heading-pos."
+targets cannot collide.  Return a list of drift entries, plists with
+:tag :target :path :local :remote :heading-pos, one per block."
   (let* ((target (if (tramp-tramp-file-p target)
                      target
                    (expand-file-name
                     target (buffer-local-value 'default-directory source-buf))))
          (root (expand-file-name tag local-root))
-         (tmp-file (make-temp-file "devops-drift-" nil ".org"))
-         (tmp-buf (find-file-noselect tmp-file))
          (mapping nil))
-    (unwind-protect
-        (with-current-buffer tmp-buf
-          (let ((inhibit-read-only t))
-            (erase-buffer)
-            (insert-buffer-substring source-buf)
-            (goto-char heading-pos)
-            (org-narrow-to-subtree)
-            (devops--specialize-noweb-blocks tag)
-            (setq mapping (devops--drift-rewrite-tangle-paths target root))
-            ;; Tangling doesn't create parent dirs (that's :mkdirp);
-            ;; the temp tree needs them.
-            (dolist (m mapping)
-              (make-directory (file-name-directory (nth 1 m)) t))
-            (org-babel-tangle)
-            (widen)))
-      (with-current-buffer tmp-buf
-        (set-buffer-modified-p nil)
-        (kill-buffer tmp-buf)
-        (delete-file tmp-file)))
+    (devops--tangle-subtree
+     source-buf heading-pos
+     (lambda (path params _file)
+       (when-let* ((dest (devops--drift-destination target root path params)))
+         ;; Tangling doesn't create parent dirs (that's :mkdirp);
+         ;; the temp tree needs them.
+         (make-directory (file-name-directory (car dest)) t)
+         (push (list path (car dest) (cdr dest)) mapping)
+         (car dest))))
     (mapcar (lambda (m)
               (list :tag tag :target target
                     :path (nth 0 m) :local (nth 1 m) :remote (nth 2 m)
                     :heading-pos heading-pos))
-            mapping)))
+            (nreverse mapping))))
 
 (defun devops--drift-file-contents (file)
   "Return FILE's contents as a raw string, without coding conversion."
