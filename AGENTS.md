@@ -55,7 +55,7 @@ Paths are redirected at the data level. A `:filter-return` advice on
 `org-babel-tangle-collect-blocks` rewrites each block's destination file in
 org's write plan when `devops--tangle-redirect` is bound, and does nothing
 otherwise. `devops--tangle-destination` (for tangling) and
-`devops--drift-destination` (for the drift check) are pure functions that
+`devops-drift--destination` (for the drift check) are pure functions that
 decide each destination. Test new path rules there. Org still does the
 writing itself (`:mkdirp`, `:shebang`, `:tangle-mode`). The background is in
 `decisions/01-tangling.org`.

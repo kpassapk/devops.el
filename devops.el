@@ -34,6 +34,7 @@
 
 ;;; Code:
 
+(require 'cl-lib)  ; cl-progv
 (require 'org)
 (require 'org-element)  ; org-element-property / org-element-at-point
 (require 'ob-tangle)    ; advised below: org-babel-tangle-collect-blocks
@@ -290,14 +291,11 @@ language-specific defaults to suppress along with the global ones.
 Returns nil when point is not on a src block."
   (let* ((sym (and lang (intern-soft
                          (concat "org-babel-default-header-args:" lang))))
-         (lang-default (and sym (boundp sym) sym))
-         (saved (and lang-default (symbol-value lang-default)))
-         (org-babel-default-header-args nil))
-    (unwind-protect
-        (progn
-          (when lang-default (set lang-default nil))
-          (nth 2 (ignore-errors (org-babel-get-src-block-info 'no-eval))))
-      (when lang-default (set lang-default saved)))))
+         (lang-default (and sym (boundp sym) sym)))
+    (cl-progv (cons 'org-babel-default-header-args
+                    (and lang-default (list lang-default)))
+        nil
+      (nth 2 (ignore-errors (org-babel-get-src-block-info 'no-eval))))))
 
 (defun devops--session-declared-p (params block-params lang)
   "Non-nil when the block, not org, decided its `:session'.
@@ -805,8 +803,8 @@ ARG, visit it in another window."
      ((> (length paths) 1)
       (let ((chosen-file (completing-read "Visit: " paths nil t)))
         (if arg
-	    (find-file-other-window chosen-file)
-	  (find-file chosen-file))))
+            (find-file-other-window chosen-file)
+          (find-file chosen-file))))
      (t
       (message "No tangle paths found.")))))
 
@@ -889,13 +887,6 @@ is an alist of (NAME . VALUE) exported in that shell."
                             (cons (format "%s" name) value))))
                       params))))))
 
-(defun devops--src-block-tangle-header ()
-  "Return the :tangle header argument of the src block at point, or nil."
-  (let ((block-info (org-babel-get-src-block-info 'light)))
-    (when block-info
-      (let ((header-args (nth 2 block-info)))
-	(cdr (assoc :tangle header-args))))))
-
 (defun devops--src-block-body ()
   "Return the body of the current src block, or nil."
   (when (derived-mode-p 'org-mode)
@@ -910,7 +901,7 @@ In a src block, if the : copies body to clipboard and exports :var env vars."
   (interactive)
   (let* ((dir (devops--heading-target-dir))
          (env-vars (devops-src-block-env-vars))
-	 (lang (org-element-property :language (org-element-at-point))))
+         (lang (org-element-property :language (org-element-at-point))))
     (when (or (string= lang "shell") (string= lang "sh"))
       (kill-new (devops--src-block-body))
       (message "Source block copied to kill ring."))
