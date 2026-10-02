@@ -624,7 +624,8 @@ names no file, so no other buffer can be visiting it."
                      (goto-char heading-pos)
                      (org-narrow-to-subtree)
                      (org-babel-tangle)))))
-      (if (org-base-buffer-file-name)
+      ;; Not `org-base-buffer-file-name', which Org 9.7 lacks.
+      (if (buffer-file-name (buffer-base-buffer))
           (funcall tangle)
         (let ((buffer-file-name
                (make-temp-name (expand-file-name "devops-unsaved-"))))
