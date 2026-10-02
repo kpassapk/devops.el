@@ -1295,14 +1295,6 @@ override (issue #14)."
     (re-search-forward "begin_src")
     (should (equal (devops--src-block-body) "echo hi"))))
 
-(ert-deftest devops--src-block-tangle-header-test ()
-  "Return the :tangle header of the block at point."
-  (devops-test--with-org
-      "* H\n\n#+begin_src sh :tangle foo.txt\necho hi\n#+end_src\n"
-    (goto-char (point-min))
-    (re-search-forward "begin_src")
-    (should (equal (devops--src-block-tangle-header) "foo.txt"))))
-
 ;;; Terminal command construction (README: devops-open-terminal-dwim)
 
 (ert-deftest devops--ghostty-command-local-test ()
@@ -1345,27 +1337,27 @@ afterwards), in an org buffer visiting the formatted text."
   (declare (indent 2))
   `(devops-test--with-local-target ,target
      (devops-test--with-org (format ,org-fmt ,target)
-       (let* ((result (devops--drift-check (current-buffer) t))
+       (let* ((result (devops-drift--check (current-buffer) t))
               (root (car result))
               (entries (cdr result)))
          (unwind-protect
              (progn ,@body)
            (delete-directory root t))))))
 
-(ert-deftest devops--drift-localize-path-test ()
+(ert-deftest devops-drift--localize-path-test ()
   "Map :tangle paths to collision-free relative temp paths."
-  (should (equal (devops--drift-localize-path "~/foo.txt") "home/foo.txt"))
-  (should (equal (devops--drift-localize-path "~admin/foo.txt")
+  (should (equal (devops-drift--localize-path "~/foo.txt") "home/foo.txt"))
+  (should (equal (devops-drift--localize-path "~admin/foo.txt")
                  "home/admin/foo.txt"))
-  (should (equal (devops--drift-localize-path "/etc/app.conf") "etc/app.conf"))
-  (should (equal (devops--drift-localize-path "conf/app.conf") "conf/app.conf"))
+  (should (equal (devops-drift--localize-path "/etc/app.conf") "etc/app.conf"))
+  (should (equal (devops-drift--localize-path "conf/app.conf") "conf/app.conf"))
   ;; TRAMP paths reduce to their remote-local part first.
-  (should (equal (devops--drift-localize-path "/ssh:host:~/x.txt")
+  (should (equal (devops-drift--localize-path "/ssh:host:~/x.txt")
                  "home/x.txt"))
-  (should (equal (devops--drift-localize-path "/ssh:host:/etc/x.conf")
+  (should (equal (devops-drift--localize-path "/ssh:host:/etc/x.conf")
                  "etc/x.conf")))
 
-(ert-deftest devops--drift-rewrite-tangle-paths-test ()
+(ert-deftest devops-drift--rewrite-tangle-paths-test ()
   "Rewrite :tangle to temp paths and record (PATH LOCAL REMOTE)."
   (devops-test--with-org
       (concat "* Heading\n\n"
@@ -1375,7 +1367,7 @@ afterwards), in an org buffer visiting the formatted text."
               "echo skip\n#+end_src\n\n"
               "#+begin_src sh :tangle /ssh:other:/etc/x.conf\n"
               "key=val\n#+end_src\n")
-    (let ((mapping (devops--drift-rewrite-tangle-paths "/ssh:host1:" "/tmp/root")))
+    (let ((mapping (devops-drift--rewrite-tangle-paths "/ssh:host1:" "/tmp/root")))
       (should (= 2 (length mapping)))
       ;; Buffer order; :tangle no untouched.
       (should (equal (car mapping)
@@ -1392,7 +1384,7 @@ afterwards), in an org buffer visiting the formatted text."
       (goto-char (point-min))
       (should-not (search-forward ":tangle /ssh:other:" nil t)))))
 
-(ert-deftest devops--drift-rewrite-tangle-paths-target-nil-test ()
+(ert-deftest devops-drift--rewrite-tangle-paths-target-nil-test ()
   "An opted-out block is left out of the mapping and neutralized."
   (devops-test--with-org
       (concat "* Heading\n\n"
@@ -1400,7 +1392,7 @@ afterwards), in an org buffer visiting the formatted text."
               "echo hi\n#+end_src\n\n"
               "#+begin_src sh :target nil :tangle ~/bar.txt\n"
               "echo hi\n#+end_src\n")
-    (let ((mapping (devops--drift-rewrite-tangle-paths "/ssh:host1:" "/tmp/root")))
+    (let ((mapping (devops-drift--rewrite-tangle-paths "/ssh:host1:" "/tmp/root")))
       (should (= 1 (length mapping)))
       (should (equal (car mapping)
                      '("~/foo.txt" "/tmp/root/home/foo.txt"
@@ -1425,7 +1417,7 @@ afterwards), in an org buffer visiting the formatted text."
                   target)
         (let ((default-directory here))
           (devops-tangle-headline (current-buffer) "Deploy"))
-        (let* ((result (devops--drift-check (current-buffer) t))
+        (let* ((result (devops-drift--check (current-buffer) t))
                (entries (cdr result)))
           (unwind-protect
               (progn
@@ -1442,7 +1434,7 @@ afterwards), in an org buffer visiting the formatted text."
                         "#+begin_src txt :tangle foo.txt\nhello\n#+end_src\n")
                 target)
       (devops-tangle-headline (current-buffer) "Deploy")
-      (let* ((result (devops--drift-check (current-buffer) t))
+      (let* ((result (devops-drift--check (current-buffer) t))
              (entries (cdr result)))
         (unwind-protect
             (progn
@@ -1463,7 +1455,7 @@ afterwards), in an org buffer visiting the formatted text."
     (ignore entries root)
     (with-temp-file (concat target "foo.txt") (insert "changed on server\n"))
     ;; Re-run: previous check tangled but target now differs.
-    (let ((again (devops--drift-check (current-buffer) t)))
+    (let ((again (devops-drift--check (current-buffer) t)))
       (unwind-protect
           (should (eq (plist-get (car (cdr again)) :status) :drift))
         (delete-directory (car again) t)))))
@@ -1494,7 +1486,7 @@ afterwards), in an org buffer visiting the formatted text."
                           "tier=<<tier>>\n#+end_src\n")
                   t1 t2)
         (devops-tangle-headline (current-buffer) "Deploy")
-        (let* ((result (devops--drift-check (current-buffer) t))
+        (let* ((result (devops-drift--check (current-buffer) t))
                (entries (cdr result)))
           (unwind-protect
               (progn
@@ -1518,7 +1510,7 @@ afterwards), in an org buffer visiting the formatted text."
                 target)
       (goto-char (point-min))
       (re-search-forward "^\\* One")
-      (let ((result (devops--drift-check (current-buffer))))
+      (let ((result (devops-drift--check (current-buffer))))
         (unwind-protect
             (progn
               (should (= 1 (length (cdr result))))
@@ -1717,7 +1709,7 @@ afterwards), in an org buffer visiting the formatted text."
         (devops-tangle-headline (current-buffer) "Deploy")
         ;; host1 stays in sync; host2's copy disappears out-of-band.
         (delete-file (concat t2 "foo.txt"))
-        (let ((result (devops--drift-check (current-buffer) t)))
+        (let ((result (devops-drift--check (current-buffer) t)))
           (unwind-protect
               (progn
                 (devops-drift--decorate-source (current-buffer) (cdr result))

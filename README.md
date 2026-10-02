@@ -336,7 +336,7 @@ Any project with a `tools.org` at its root can expose named org-babel blocks as 
 ```elisp
 (use-package devops-lob
   :ensure t
-  :vc (:url "https://github.com/kpasaspk/devops.el"
+  :vc (:url "https://github.com/kpassapk/devops.el"
        :main-file "devops-lob.el")
   :hook
   (after-init . (lambda () (devops-lob-auto-mode 1))))
