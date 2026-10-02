@@ -100,7 +100,9 @@ targets cannot collide.  Return a list of drift entries, plists with
          ;; the temp tree needs them.
          (make-directory (file-name-directory (car dest)) t)
          (push (list path (car dest) (cdr dest)) mapping)
-         (car dest))))
+         ;; Written locally as though at the remote, so a `:comments
+         ;; link' reads as it does in the deployed file.
+         dest)))
     (mapcar (lambda (m)
               (list :tag tag :target target
                     :path (nth 0 m) :local (nth 1 m) :remote (nth 2 m)
