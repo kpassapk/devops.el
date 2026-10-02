@@ -2,6 +2,7 @@
 
 [![MELPA](https://melpa.org/packages/devops-badge.svg)](https://melpa.org/#/devops)
 [![Tests](https://github.com/kpassapk/devops.el/actions/workflows/test.yml/badge.svg)](https://github.com/kpassapk/devops.el/actions/workflows/test.yml)
+[![Emacs 30.1+](https://img.shields.io/badge/Emacs-30.1%2B-7F5AB6?logo=gnuemacs&logoColor=white)](https://www.gnu.org/software/emacs/)
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE)
 
 By following some conventions, this package helps you to manage infrastructure with org mode. Infrastructure here may be servers, containers, serverless functions, DNS... up to you.

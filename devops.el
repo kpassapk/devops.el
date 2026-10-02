@@ -7,7 +7,7 @@
 ;; Maintainer: Kyle S Passarelli <kyle.passarelli@gmail.com>
 ;; URL: https://github.com/kpassapk/devops.el
 ;; Version: 0.1.0
-;; Package-Requires: ((emacs "29.1"))
+;; Package-Requires: ((emacs "30.1"))
 ;; Keywords: tools, processes, outlines
 
 ;; This package is free software; you can redistribute it and/or modify
@@ -28,19 +28,16 @@
 ;; `devops.el' offers utilities for running commands on local and remote
 ;; machines using org mode.
 ;;
-;; The package itself needs nothing newer than the org bundled with Emacs
-;; 29.  `devops-enable-session-async' is the exception: running shell
-;; blocks asynchronously needs the `:async' support `ob-shell' gained in
-;; Org 9.7 (Emacs 30.1), and turns itself off under an older org rather
-;; than putting blocks in a session it cannot drive.  Hence no (org "9.7")
-;; in Package-Requires: an optional feature should not force everyone to
-;; replace their built-in org.
+;; Emacs 30.1 is the baseline, so the bundled org is 9.7 or newer: that
+;; is where `ob-shell' gained the `:async' support
+;; `devops-enable-session-async' relies on.
 
 ;;; Code:
 
 (require 'cl-lib)  ; cl-progv
 (require 'org)
 (require 'org-element)  ; org-element-property / org-element-at-point
+(require 'ob-tangle)    ; advised below: org-babel-tangle-collect-blocks
 (require 'tramp)  ; tramp-tramp-file-p / tramp-dissect-file-name etc. are used
                   ; below; autoloaded interactively but not under `emacs -Q'.
 
@@ -69,9 +66,7 @@ dirty session may fail in a fresh one, so prefer blocks that do not
 depend on the ones above them, and use `devops-restart-session' to get
 back to a known state.
 
-Shell blocks need Org 9.7 or newer, where `ob-shell' learned `:async';
-under an older org this option leaves them alone rather than putting
-them in a session it cannot run asynchronously.  A shell block with
+A shell block with
 `:results value' — whose result is its exit status — runs synchronously
 too, because under `:async' ob-shell returns the whole output instead."
   :type 'boolean
@@ -283,28 +278,6 @@ a server."
     (or (member (cdr cell) devops--target-none-values)
         (user-error "Unknown :target value %S (expected nil)" (cdr cell)))))
 
-(defun devops--target-opted-out-regions ()
-  "Return (BEG . END) for each src block that opts out of its heading's target.
-Covers the accessible portion of the buffer, so a narrowed subtree yields
-only its own blocks.  Header arguments are read with the same merge rules
-as execution, so a `:target nil' inherited from a `header-args' property
-counts.  The regions let a textual :tangle rewrite tell an opted-out
-block's header from any other."
-  (org-element-map (org-element-parse-buffer 'element) 'src-block
-    (lambda (el)
-      (save-excursion
-        (goto-char (org-element-property :post-affiliated el))
-        (when (devops--target-opted-out-p nil (devops--block-params nil))
-          (cons (org-element-property :begin el)
-                (org-element-property :end el)))))))
-
-(defun devops--in-regions-p (pos regions)
-  "Return non-nil if POS falls inside one of REGIONS, a list of (BEG . END)."
-  (catch 'hit
-    (dolist (region regions)
-      (when (and (>= pos (car region)) (< pos (cdr region)))
-        (throw 'hit t)))))
-
 (defun devops--session-name (tag target)
   "Return the session name for TAG and TARGET."
   (funcall devops-session-name-function tag target))
@@ -346,19 +319,6 @@ worth avoiding."
              (let ((own (devops--user-header-args lang)))
                (or (null own) (assq :session own)))))))
 
-(defun devops--lang-async-p (lang)
-  "Non-nil when org can evaluate LANG asynchronously in a session.
-`ob-shell' gained `:async' in Org 9.7.  On older org the header argument
-is not merely unsupported but silently ignored, and the block runs
-synchronously in the comint session — worse than no session at all,
-since a command that asks a question then blocks Emacs inside a buffer
-the user never sees.  Probing the feature rather than the org version
-also keeps Emacs 29 working once org is upgraded from ELPA."
-  (if (member lang '("sh" "bash" "shell"))
-      (and (require 'ob-shell nil t)
-           (boundp 'ob-shell-async-indicator))
-    t))
-
 (defun devops--result-params (params)
   "Return the list of result parameters in PARAMS, or nil.
 Processed header arguments carry `:result-params' ready-made; the
@@ -396,8 +356,7 @@ printed, exit status last.  Such a block is run synchronously instead."
 PARAMS and BLOCK-PARAMS are as in `devops--header-cell', LANG is the
 block's language, and TAG and TARGET the heading's resolved target.
 Nothing is injected unless `devops-enable-session-async' is on, LANG is
-in `devops-async-session-languages' and supported by the running org
-\(see `devops--lang-async-p'), and we are executing on the user's
+in `devops-async-session-languages', and we are executing on the user's
 behalf rather than under `devops-with-sync'.  A shell block whose result
 is its exit status is left alone too; see `devops--shell-value-p'.
 
@@ -408,7 +367,6 @@ and `:session other' attaches it to a session of the user's choosing."
   (when (and devops-enable-session-async
              (not devops--inhibit-async)
              (member lang devops-async-session-languages)
-             (devops--lang-async-p lang)
              (not (devops--shell-value-p lang params block-params)))
     (let* ((declared (devops--session-declared-p params block-params lang))
            (session (cdr (devops--header-cell :session params block-params))))
@@ -513,23 +471,6 @@ activated virtualenv — that earlier blocks left behind."
         (kill-buffer buf))
       (message "Killed session %s" name))))
 
-(defun devops--specialize-noweb-blocks (tag)
-  "Rewrite #+name: FOO (TAG) blocks for server-specific noweb resolution.
-Blocks matching TAG get renamed to #+name: FOO.
-Blocks matching other tags get renamed to avoid resolution."
-  (save-excursion
-    (goto-char (point-min))
-    (while (re-search-forward
-            "^\\([ \t]*#\\+name:[ \t]*\\)\\([^ \t\n]+\\) +(\\([^)]+\\))"
-            nil t)
-      (let ((prefix (match-string 1))
-            (basename (match-string 2))
-            (block-tag (match-string 3)))
-        (replace-match
-         (if (string= block-tag tag)
-             (concat prefix basename)
-           (concat prefix "_devops-excluded-" basename "-" block-tag)))))))
-
 (defun devops--split-target (target)
   "Split TARGET into a (PREFIX . ROOT) cons.
 PREFIX is the TRAMP method/host header and ROOT the directory part:
@@ -572,82 +513,164 @@ to expand when the file is written, on the machine it belongs to."
      (t
       (concat prefix root "/" path)))))
 
-(defun devops--rewrite-tangle-paths (tramp-prefix &optional local-dir)
-  "Rewrite :tangle header args in buffer to include TRAMP-PREFIX.
-Modifies buffer text.  Skips :tangle no, :tangle yes, and paths already
-containing a TRAMP prefix.
+(defvar devops--tangle-redirect nil
+  "Function deciding where `org-babel-tangle' writes each block, or nil.
+It is called with a block's :tangle value, its header arguments and
+FILE, the file org would write the block to, and returns the file to
+write instead, or nil to leave the block out (or (FILE . AS-IF), see
+`devops--redirect-tangle-plan').  Bound only while devops
+tangles, see `devops--tangle-subtree'; while it is nil, tangling is
+org's own.")
 
-A block that opted out with `:target nil' keeps its own path: the target
-is off for tangling exactly as it is for execution, so the file lands
-locally.  Such a relative path is expanded against LOCAL-DIR, since
-tangling runs in a temp buffer whose directory is the system temp dir and
-`org-babel-tangle' would otherwise resolve it there."
-  (let ((opted-out (devops--target-opted-out-regions)))
-    (save-excursion
-      (goto-char (point-max))
-      (while (re-search-backward
-              ":tangle +\\([^ \t\n]+\\)"
-              nil t)
-        (let ((path (match-string 1))
-              (beg (match-beginning 0)))
-          (when (and (not (member path '("no" "yes")))
-                     (not (tramp-tramp-file-p path)))
-            (replace-match
-             (concat ":tangle "
-                     (if (devops--in-regions-p beg opted-out)
-                         (if local-dir (expand-file-name path local-dir) path)
-                       (devops--join-target tramp-prefix path))))
-            ;; Step before the rewrite so the backward search keeps making
-            ;; progress.  Otherwise a local (non-TRAMP) prefix would leave the
-            ;; rewritten path matchable and we'd re-prefix it forever.
-            (goto-char beg)))))))
+(defun devops--relink (link from to)
+  "Make LINK, relative to directory FROM, relative to directory TO.
+LINK is the `:comments link' target org stored for a block.  Under
+`org-babel-tangle-use-relative-file-links' it is a file: link relative
+to the directory the block was going to be written to, FROM.  Written
+to TO instead, the block needs it relative to TO; on another machine
+`file-relative-name' yields an absolute name, the only one that works
+there.  Any other LINK is returned unchanged."
+  (if (and link (string-match "\\`file:\\(.*?\\)\\(::.*\\)?\\'" link))
+      (let ((path (match-string 1 link))
+            (search (or (match-string 2 link) "")))
+        (if (file-name-absolute-p path)
+            link
+          (concat "file:"
+                  (file-relative-name (expand-file-name path from) to)
+                  search)))
+    link))
 
-(defun devops--tangle-heading (source-buf heading-pos tag target)
+(defun devops--redirect-tangle-plan (plan)
+  "Send each block in PLAN where `devops--tangle-redirect' says.
+PLAN is what `org-babel-tangle-collect-blocks' returns: a list of
+\(FILE (LANG . SPEC) ...) that `org-babel-tangle' then writes out, one
+FILE at a time.  It is the only place org looks for a destination, so
+redirecting here changes where blocks land without touching the org
+text, and leaves the writing itself (`:mkdirp', `:shebang',
+`:tangle-mode', skipping an unchanged file) to org.  Blocks are regrouped
+by their new file, in their original order, so several blocks bound for
+one file still end up in it together.
+
+A redirect may also return (FILE . AS-IF): the block is written to FILE
+as though it were AS-IF, which only matters to a `:comments link'.  A
+drift check uses this to tangle a stand-in copy whose link reads exactly
+as the deployed file's does."
+  (if (not devops--tangle-redirect)
+      plan
+    (let (out)
+      (dolist (group plan)
+        (dolist (block (cdr group))
+          (let* ((spec (copy-sequence (cdr block)))
+                 (params (nth 4 spec))
+                 (path (cdr (assq :tangle params)))
+                 (dest (funcall devops--tangle-redirect
+                                path params (car group)))
+                 (file (if (consp dest) (car dest) dest))
+                 (as-if (if (consp dest) (cdr dest) dest)))
+            (when file
+              ;; Org made the link relative to where the block was headed,
+              ;; the directory of PATH read from here.
+              (setf (nth 2 spec)
+                    (devops--relink (nth 2 spec)
+                                    (file-name-directory (expand-file-name path))
+                                    (file-name-directory as-if)))
+              (let ((cell (assoc file out)))
+                (unless cell
+                  (push (setq cell (list file)) out))
+                (push (cons (car block) spec) (cdr cell)))))))
+      (mapcar (lambda (cell) (cons (car cell) (nreverse (cdr cell))))
+              (nreverse out)))))
+
+(advice-add 'org-babel-tangle-collect-blocks
+            :filter-return #'devops--redirect-tangle-plan)
+
+(defun devops--tangle-subtree (source-buf heading-pos redirect)
+  "Tangle the subtree at HEADING-POS in SOURCE-BUF, sending blocks by REDIRECT.
+REDIRECT is bound as `devops--tangle-redirect' for the duration.  Return
+the files `org-babel-tangle' wrote.
+
+The org buffer is tangled where it is, narrowed to the subtree, and is
+neither changed nor saved: `save-buffer' is taken out of
+`org-babel-pre-tangle-hook', and every other hook runs as usual.  Header
+arguments resolve as they always do, inherited from parent headings and
+#+PROPERTY lines outside the subtree; relative paths, `:tangle yes' and
+`:comments link' resolve against the org file.
+
+A buffer that visits no file is lent a file name meanwhile, because
+`org-babel-tangle' resolves paths against one and fails without it.  The
+name is in the buffer's directory, so blocks resolve against that, and
+names no file, so no other buffer can be visiting it."
+  (with-current-buffer source-buf
+    (let ((org-babel-pre-tangle-hook
+           (remq 'save-buffer org-babel-pre-tangle-hook))
+          (devops--tangle-redirect redirect)
+          (tangle (lambda ()
+                    (org-with-wide-buffer
+                     (goto-char heading-pos)
+                     (org-narrow-to-subtree)
+                     (org-babel-tangle)))))
+      ;; Not `org-base-buffer-file-name', which Org 9.7 lacks.
+      (if (buffer-file-name (buffer-base-buffer))
+          (funcall tangle)
+        (let ((buffer-file-name
+               (make-temp-name (expand-file-name "devops-unsaved-"))))
+          (funcall tangle))))))
+
+(defun devops--tangle-destination (target path params file)
+  "Return the file a block with :tangle PATH is written to on TARGET.
+PARAMS are the block's header arguments and FILE is where org itself
+would write it.  A relative PATH lands under TARGET's directory, an
+absolute one at that path on TARGET's machine, see `devops--join-target'.
+
+FILE stands when there is no path to retarget: for `:tangle yes', which
+names a file after the org file; for a PATH that already names its
+machine; and for a block that opted out with `:target nil', since the
+target is off for tangling exactly as it is for execution."
+  (if (or (string= path "yes")
+          (tramp-tramp-file-p path)
+          (devops--target-opted-out-p nil params))
+      file
+    (devops--join-target target path)))
+
+(defun devops--tangle-heading (source-buf heading-pos target)
   "Tangle subtree at HEADING-POS from SOURCE-BUF to TARGET.
-TAG is the server tag used for per-server noweb resolution.
-Returns number of files tangled, or nil.
+Return the number of files tangled, or nil.
 
 A relative local TARGET (e.g. \".\" or \"../foo\") is expanded against
-SOURCE-BUF's directory before tangling.  Tangling runs in a temp buffer
-whose file lives in the system temp dir, so without this a relative
-target would silently resolve against the temp dir instead of the org
-file.  TRAMP targets are left untouched.  Blocks that opted out of the
-target with `:target nil' resolve against that same directory."
-  (let* ((local-dir (buffer-local-value 'default-directory source-buf))
-         (target (if (tramp-tramp-file-p target)
+SOURCE-BUF's directory, like the blocks' own relative paths.  TRAMP
+targets are left untouched."
+  (let* ((target (if (tramp-tramp-file-p target)
                      target
-                   (expand-file-name target local-dir)))
-         (tmp-file (make-temp-file "devops-tangle-" nil ".org"))
-         (tmp-buf  (find-file-noselect tmp-file)))
-    (unwind-protect
-        (with-current-buffer tmp-buf
-          (let ((inhibit-read-only t))
-            (erase-buffer)
-            (insert-buffer-substring source-buf)
-            (goto-char heading-pos)
-            (org-narrow-to-subtree)
-            (let* ((files (progn
-                            (devops--specialize-noweb-blocks tag)
-                            (devops--rewrite-tangle-paths target local-dir)
-                            (org-babel-tangle))))
-              (widen)
-              (when files (length files)))))
-      (with-current-buffer tmp-buf
-        (set-buffer-modified-p nil)
-        (kill-buffer tmp-buf)
-        (delete-file tmp-file)))))
+                   (expand-file-name
+                    target (buffer-local-value 'default-directory source-buf))))
+         (files (devops--tangle-subtree
+                 source-buf heading-pos
+                 (lambda (path params file)
+                   (devops--tangle-destination target path params file)))))
+    (when files (length files))))
 
 (defun devops--tangle-spec (&optional arg)
   "Return a tangle plan for the current buffer.
 Each entry is a plist (:tag TAG :target TARGET :heading-pos POS).
 
-With prefix ARG non-nil, include all target-tagged headings.
+With prefix ARG non-nil, include all target-tagged headings.  A heading
+is included for a tag only where its parent heading does not have the
+tag: below that, the heading is already part of the subtree tangled for
+it, and including it again would tangle it twice.  Matching only a
+heading's own tags would not do, since a child may repeat its parent's
+tag, and a tag from #+FILETAGS is no heading's own.
+
 Otherwise include only the current heading."
   (if arg
       (let (specs)
         (org-map-entries
          (lambda ()
-           (dolist (pair (devops--heading-target-tags))
+           (dolist (pair (let ((parent-tags (save-excursion
+                                              (and (org-up-heading-safe)
+                                                   (org-get-tags)))))
+                           (seq-remove (lambda (pair)
+                                         (member (car pair) parent-tags))
+                                       (devops--heading-target-tags))))
              (push (list :tag (car pair)
                          :target (cdr pair)
                          :heading-pos (point))
@@ -679,7 +702,7 @@ the server."
         (let* ((tag (plist-get entry :tag))
                (target (plist-get entry :target))
                (heading-pos (plist-get entry :heading-pos))
-               (n (devops--tangle-heading source-buf heading-pos tag target)))
+               (n (devops--tangle-heading source-buf heading-pos target)))
           (when n
             (push (list tag target n) results))))
       (nreverse results))))
@@ -697,8 +720,8 @@ the server."
 ;;;###autoload
 (defun devops-tangle (&optional arg)
   "Tangle current heading's source blocks to remote target(s).
-Resolves the heading's target tag to a TRAMP path and rewrites
-:tangle header args before delegating to `org-babel-tangle'.
+Resolves the heading's target tag to a TRAMP path and has
+`org-babel-tangle' write each block's :tangle path there.
 
 With prefix ARG, tangle all headings in the buffer that have
 target tags."
