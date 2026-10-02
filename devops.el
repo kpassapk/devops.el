@@ -519,7 +519,8 @@ to expand when the file is written, on the machine it belongs to."
   "Function deciding where `org-babel-tangle' writes each block, or nil.
 It is called with a block's :tangle value, its header arguments and
 FILE, the file org would write the block to, and returns the file to
-write instead, or nil to leave the block out.  Bound only while devops
+write instead, or nil to leave the block out (or (FILE . AS-IF), see
+`devops--redirect-tangle-plan').  Bound only while devops
 tangles, see `devops--tangle-subtree'; while it is nil, tangling is
 org's own.")
 
@@ -550,7 +551,12 @@ redirecting here changes where blocks land without touching the org
 text, and leaves the writing itself (`:mkdirp', `:shebang',
 `:tangle-mode', skipping an unchanged file) to org.  Blocks are regrouped
 by their new file, in their original order, so several blocks bound for
-one file still end up in it together."
+one file still end up in it together.
+
+A redirect may also return (FILE . AS-IF): the block is written to FILE
+as though it were AS-IF, which only matters to a `:comments link'.  A
+drift check uses this to tangle a stand-in copy whose link reads exactly
+as the deployed file's does."
   (if (not devops--tangle-redirect)
       plan
     (let (out)
@@ -559,15 +565,17 @@ one file still end up in it together."
           (let* ((spec (copy-sequence (cdr block)))
                  (params (nth 4 spec))
                  (path (cdr (assq :tangle params)))
-                 (file (funcall devops--tangle-redirect
-                                path params (car group))))
+                 (dest (funcall devops--tangle-redirect
+                                path params (car group)))
+                 (file (if (consp dest) (car dest) dest))
+                 (as-if (if (consp dest) (cdr dest) dest)))
             (when file
               ;; Org made the link relative to where the block was headed,
               ;; the directory of PATH read from here.
               (setf (nth 2 spec)
                     (devops--relink (nth 2 spec)
                                     (file-name-directory (expand-file-name path))
-                                    (file-name-directory file)))
+                                    (file-name-directory as-if)))
               (let ((cell (assoc file out)))
                 (unless cell
                   (push (setq cell (list file)) out))
@@ -647,13 +655,24 @@ targets are left untouched."
   "Return a tangle plan for the current buffer.
 Each entry is a plist (:tag TAG :target TARGET :heading-pos POS).
 
-With prefix ARG non-nil, include all target-tagged headings.
+With prefix ARG non-nil, include all target-tagged headings.  A heading
+is included for a tag only where its parent heading does not have the
+tag: below that, the heading is already part of the subtree tangled for
+it, and including it again would tangle it twice.  Matching only a
+heading's own tags would not do, since a child may repeat its parent's
+tag, and a tag from #+FILETAGS is no heading's own.
+
 Otherwise include only the current heading."
   (if arg
       (let (specs)
         (org-map-entries
          (lambda ()
-           (dolist (pair (devops--heading-target-tags))
+           (dolist (pair (let ((parent-tags (save-excursion
+                                              (and (org-up-heading-safe)
+                                                   (org-get-tags)))))
+                           (seq-remove (lambda (pair)
+                                         (member (car pair) parent-tags))
+                                       (devops--heading-target-tags))))
              (push (list :tag (car pair)
                          :target (cdr pair)
                          :heading-pos (point))

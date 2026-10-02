@@ -534,6 +534,66 @@ newline; the selector must be trimmed before matching."
         (should (file-exists-p (concat target "a.txt")))
         (should (file-exists-p (concat target "b.txt")))))))
 
+(ert-deftest devops-tangle-all-inherited-tag-once-test ()
+  "A child that inherits its parent's tag is tangled once, with the parent."
+  (devops-test--with-local-target target
+    (devops-test--with-org
+        (format (concat "#+TARGET: %s (srv)\n\n"
+                        "* Parent\t\t:srv:\n"
+                        "#+begin_src txt :tangle a.txt\na\n#+end_src\n"
+                        "** Child\n"
+                        "#+begin_src txt :tangle b.txt\nb\n#+end_src\n")
+                target)
+      (should (equal (devops-tangle-all (current-buffer))
+                     (list (list "srv" target 2)))))))
+
+(ert-deftest devops-tangle-all-repeated-tag-once-test ()
+  "A child that repeats its parent's tag is still tangled only once."
+  (devops-test--with-local-target target
+    (devops-test--with-org
+        (format (concat "#+TARGET: %s (srv)\n\n"
+                        "* Parent\t\t:srv:\n"
+                        "#+begin_src txt :tangle a.txt\na\n#+end_src\n"
+                        "** Child\t\t:srv:\n"
+                        "#+begin_src txt :tangle b.txt\nb\n#+end_src\n")
+                target)
+      (should (equal (devops-tangle-all (current-buffer))
+                     (list (list "srv" target 2)))))))
+
+(ert-deftest devops-tangle-all-child-own-tag-test ()
+  "A child's own extra tag tangles just the child to that target."
+  (devops-test--with-local-target t1
+    (devops-test--with-local-target t2
+      (devops-test--with-org
+          (format (concat "#+TARGET: %s (one)\n"
+                          "#+TARGET: %s (two)\n\n"
+                          "* Parent\t\t:one:\n"
+                          "#+begin_src txt :tangle a.txt\na\n#+end_src\n"
+                          "** Child\t\t:two:\n"
+                          "#+begin_src txt :tangle b.txt\nb\n#+end_src\n")
+                  t1 t2)
+        (should (equal (devops-tangle-all (current-buffer))
+                       (list (list "one" t1 2) (list "two" t2 1))))
+        (should-not (file-exists-p (concat t2 "a.txt")))))))
+
+(ert-deftest devops-tangle-all-filetags-test ()
+  "A #+FILETAGS target tangles each top-level heading, once."
+  (devops-test--with-local-target target
+    (with-temp-buffer
+      (insert (format (concat "#+FILETAGS: :srv:\n"
+                              "#+TARGET: %s (srv)\n\n"
+                              "* One\n"
+                              "#+begin_src txt :tangle a.txt\na\n#+end_src\n"
+                              "** Sub\n"
+                              "#+begin_src txt :tangle c.txt\nc\n#+end_src\n"
+                              "* Two\n"
+                              "#+begin_src txt :tangle b.txt\nb\n#+end_src\n")
+                      target))
+      ;; After the text, so org reads #+FILETAGS.
+      (org-mode)
+      (should (equal (devops-tangle-all (current-buffer))
+                     (list (list "srv" target 2) (list "srv" target 1)))))))
+
 (ert-deftest devops-tangle-message-test ()
   "Interactive `devops-tangle' writes the file and reports it."
   (devops-test--with-local-target target
@@ -1350,6 +1410,32 @@ afterwards), in an org buffer visiting the formatted text."
                                (concat target "foo.txt")))
                 (should (equal (plist-get entry :path) "foo.txt"))))
           (delete-directory (car result) t))))))
+
+(ert-deftest devops-drift-check-comments-link-test ()
+  "A freshly tangled block with `:comments link' is in sync, link and all."
+  (devops-test--with-local-target target
+    (devops-test--with-local-target here
+      (let ((org (expand-file-name "notes.org" here))
+            (org-babel-tangle-use-relative-file-links t)
+            buf)
+        (with-temp-file org
+          (insert (format (concat "#+TARGET: %s (local)\n\n"
+                                  "* Deploy\t\t:local:\n\n"
+                                  "#+begin_src sh :tangle out.sh :comments link\n"
+                                  "echo hi\n#+end_src\n")
+                          target)))
+        (unwind-protect
+            (progn
+              (setq buf (find-file-noselect org))
+              (devops-tangle-all buf)
+              (let* ((result (devops--drift-check buf t))
+                     (entries (cdr result)))
+                (unwind-protect
+                    (should (equal (mapcar (lambda (e) (plist-get e :status))
+                                           entries)
+                                   '(:same)))
+                  (delete-directory (car result) t))))
+          (when buf (kill-buffer buf)))))))
 
 (ert-deftest devops-drift-check-drift-test ()
   "A target file that was changed out-of-band reports `drift'."
