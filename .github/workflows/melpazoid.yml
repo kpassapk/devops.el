@@ -18,11 +18,16 @@ jobs:
       run: |
         sudo apt-get install emacs && emacs --version
         git clone https://github.com/riscy/melpazoid.git ~/melpazoid
+        # melpazoid's Makefile type-checks itself with mypy before running,
+        # and upstream's template doesn't install it.
+        pip install mypy
     - name: Run
       env:
-        LOCAL_REPO: ${{ github.workspace }}
-        # RECIPE is your recipe as written for MELPA:
-        RECIPE: (devops :fetcher github :repo "kpassapk/devops.el")
+        # No LOCAL_REPO: with it, melpazoid skips the containerized
+        # byte-compile, package-lint, checkdoc and melpazoid checks.  Clone
+        # the branch under test instead.
+        # RECIPE is your recipe as written for MELPA, plus :branch:
+        RECIPE: (devops :fetcher github :repo "kpassapk/devops.el" :branch "${{ github.head_ref || github.ref_name }}")
         # set this to true if warnings should be treated as errors:
         WARN_IS_ERROR: false
         # set this to false (or remove it) if the package isn't on MELPA:

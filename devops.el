@@ -28,7 +28,7 @@
 ;; `devops.el' adds TARGET syntax for running org-babel commands
 ;; on remote servers.
 ;;
-;; Example: 
+;; Example:
 ;;
 ;; #+TARGET: /ssh:example1.com: (server1)
 ;; #+TARGET: /ssh:example2.com: (server2)
