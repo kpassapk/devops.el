@@ -12,7 +12,7 @@ there (`:dir` is injected) or tangle there (`:tangle` paths are redirected).
 | `devops.el` | Core: `#+TARGET` parsing, `:dir`/`:session` injection, `devops-tangle`, terminal DWIM |
 | `devops-drift.el` | `devops-drift`: tangles to a temp dir and compares with each target |
 | `devops-lob.el` | Loads a project's `tools.org` into the Library of Babel |
-| `devops-agentic.el` | Functions for agents over `emacsclient` |
+| `devops-scripting.el` | Noninteractive functions for scripts and agents over `emacsclient` |
 | `skills/` | Agent skills  |
 | `devops-test.el` | The whole ERT suite |
 | `decisions/` | Decision records (`NN-topic.org`). Read the relevant one before you change a design it covers. |

@@ -370,19 +370,31 @@ Setup:
 | `devops-lob-reload-project-tools` | Unload then reload (pick up edits to `tools.org`) |
 | `devops-lob-unload-all`           | Remove all devops-tracked LOB entries             |
 
-## Agent tools
+## Scripting and Agents
 
-`devops-agentic.el` is for a coding agent, or a script, that drives
-devops.el through `emacsclient --eval`.
+`devops-scripting.el` is for noninteractive use, usually through 
+`emacsclient --eval`.
 
-- `(devops-block-output FILE LINE &optional TAG)`: what the block at
-  LINE printed, with its status (`:done`, `:running`, `:not-found`,
-  `:no-session`). The output comes from the async session, stderr
-  included, or from `#+RESULTS:` when the session doesn't have the run.
-- `(devops-sessions)`: the live async sessions, each `:idle`, `:running`
-  or `:waiting`.
+```
+emacsclient --eval '(progn (require (quote devops-scripting)) ...)'
+```
 
-```sh
-emacsclient --eval '(progn (require (quote devops-agentic))
-  (json-encode (devops-block-output "/path/to/infra.org" 42)))'
+This is great for automation, and also for agents. The basic idea is this:
+
+1. An agent writes source code blocks to a file.
+2. You execute those source blocks.
+3. The agent gets notified by tailing the execution log.
+  - If there are no errors, agent continues advising
+  - If there are errors, agent helps fix them and print new source code blocks.
+4. Repeat.
+
+This way you are in control of what to execute, and the agent is limited
+to a supporting / advisory role.
+
+To enable this kind of loop, enable `devops-scripting-log-mode` and point your agent
+to the `devops-el` skill in `skills/`. For Claude Code, link it into your
+skills directory:
+
+```
+ln -s "$PWD/skills/devops-el" ~/.claude/skills/devops-el
 ```

@@ -1,4 +1,4 @@
-;;; devops-agentic.el --- Agent-facing functions for devops.el -*- lexical-binding: t; -*-
+;;; devops-scripting.el --- Noninteractive functions for devops.el -*- lexical-binding: t; -*-
 
 ;; Copyright (C) 2026 Kyle S Passarelli
 
@@ -21,8 +21,9 @@
 
 ;;; Commentary:
 ;;
-;; Functions for a program driving devops.el from outside Emacs -- a
-;; coding agent, a script -- through `emacsclient --eval'.
+;; Noninteractive functions, for a program driving devops.el from
+;; outside Emacs -- a script, a coding agent -- through `emacsclient
+;; --eval'.  Nothing here is a command, and nothing prompts.
 ;;
 ;; The commands in devops.el are written for a person at the keyboard:
 ;; they pop to buffers, ask with `completing-read' when a heading has two
@@ -32,34 +33,41 @@
 ;; command would ask, and return data -- alists keyed by keywords, which
 ;; `json-encode' turns into objects.
 ;;
-;; `devops-block-output' answers what a block printed in its async
-;; session, which the #+RESULTS of a failed block does not hold: the
-;; placeholder UUID stays, or the result is cut short, and stderr is only
-;; in the session buffer.  `devops-sessions' lists the async sessions and
-;; which of them is waiting on a prompt -- sudo, an ssh host key -- that
-;; only a person should answer.
+;; `devops-scripting-block-output' answers what a block printed in its
+;; async session, which the #+RESULTS of a failed block does not hold:
+;; the placeholder UUID stays, or the result is cut short, and stderr is
+;; only in the session buffer.  `devops-scripting-sessions' lists the
+;; async sessions and which of them is waiting on a prompt -- sudo, an
+;; ssh host key -- that only a person should answer.
+;;
+;; `devops-scripting-log-mode' goes the other way: it tells the agent when
+;; the user runs a block, by appending a JSON line per run to
+;; `devops-scripting-execution-log', and another when an async run's
+;; result arrives.
 
 ;;; Code:
 
 (require 'devops)
 (require 'comint)
+(require 'json)
+(require 'ob-comint)
 (require 'org-element)
 (require 'subr-x)
 
-(defconst devops-agentic--uuid-regexp
+(defconst devops-scripting--uuid-regexp
   "[0-9a-f]\\{8\\}-[0-9a-f]\\{4\\}-[0-9a-f]\\{4\\}-[0-9a-f]\\{4\\}-[0-9a-f]\\{12\\}"
   "A UUID as `org-id-uuid' writes it: the ID of one async run.")
 
-(defun devops-agentic--marker (edge id)
+(defun devops-scripting--marker (edge id)
   "Return a regexp for the async marker of EDGE, start or end, of run ID.
-ID is a regexp, so `devops-agentic--uuid-regexp' in a group finds
+ID is a regexp, so `devops-scripting--uuid-regexp' in a group finds
 every run.  The language is left open: ob-shell writes
 ob_comint_async_shell_..., ob-python ob_comint_async_python_..."
   (format "ob_comint_async_[a-z]+_%s_%s" edge id))
 
 ;;; Source buffers
 
-(defun devops-agentic--source-buffer (source)
+(defun devops-scripting--source-buffer (source)
   "Return SOURCE, an org buffer or file name, as a buffer to read.
 A buffer already visiting the file is used, because `find-file-noselect'
 on a file changed on disk asks whether to reread it, and over
@@ -79,7 +87,7 @@ reverted first, so that line numbers taken from the file match it."
         (revert-buffer t t t)))
     buf))
 
-(defun devops-agentic--target (tag)
+(defun devops-scripting--target (tag)
   "Return the (TAG . TARGET) of the current heading, without asking.
 With TAG, that tag's target; otherwise the heading's only one.  Where
 `devops--heading-target' would ask with `completing-read', signal a
@@ -98,7 +106,7 @@ With TAG, that tag's target; otherwise the heading's only one.  Where
 
 ;;; Session transcripts
 
-(defun devops-agentic--unprompt (text prompt)
+(defun devops-scripting--unprompt (text prompt)
   "Return TEXT without the PROMPT regexp at the start of its lines.
 A comint prompt that came back while output was arriving is left at the
 start of the next output line, sometimes more than once."
@@ -108,26 +116,26 @@ start of the next output line, sometimes more than once."
             text (replace-regexp-in-string prompt "" text)))
     text))
 
-(defun devops-agentic--quoted-p (pos)
+(defun devops-scripting--quoted-p (pos)
   "Whether the marker starting at POS is quoted.
 The command that prints a marker -- echo \\='...\\=' in a shell,
 print (\\='...\\=') in python -- is echoed into the session ahead of the marker
 it prints, and the quote is what tells the two apart."
   (eq (char-before pos) ?'))
 
-(defun devops-agentic--search-marker (edge id quoted &optional bound)
+(defun devops-scripting--search-marker (edge id quoted &optional bound)
   "Search forward for the EDGE marker of run ID; its start, or nil.
 QUOTED selects the echoed command printing it rather than the marker
 printed.  Point moves past the match.  BOUND limits the search."
-  (let ((re (devops-agentic--marker edge (regexp-quote id)))
+  (let ((re (devops-scripting--marker edge (regexp-quote id)))
         found)
     (while (and (not found) (re-search-forward re bound t))
-      (when (eq (and (devops-agentic--quoted-p (match-beginning 0)) t)
+      (when (eq (and (devops-scripting--quoted-p (match-beginning 0)) t)
                 quoted)
         (setq found (match-beginning 0))))
     found))
 
-(defun devops-agentic--runs (session)
+(defun devops-scripting--runs (session)
   "Return every async run in the buffer SESSION, oldest first.
 Each run is an alist: :id, :input as the session echoed it, :output, and
 :done, nil while the end marker has not been printed.  The output
@@ -139,29 +147,29 @@ the session's prompts removed."
       (save-excursion
         (goto-char (point-min))
         (while (re-search-forward
-                (devops-agentic--marker
-                 "start" (concat "\\(" devops-agentic--uuid-regexp "\\)"))
+                (devops-scripting--marker
+                 "start" (concat "\\(" devops-scripting--uuid-regexp "\\)"))
                 nil t)
-          (when (devops-agentic--quoted-p (match-beginning 0))
+          (when (devops-scripting--quoted-p (match-beginning 0))
             (push (match-string-no-properties 1) ids)))
         (dolist (id (nreverse ids))
           (goto-char (point-min))
-          (devops-agentic--search-marker "start" id t)
+          (devops-scripting--search-marker "start" id t)
           (let* ((in-beg (line-beginning-position 2))
-                 (in-end (and (devops-agentic--search-marker "end" id t)
+                 (in-end (and (devops-scripting--search-marker "end" id t)
                               (line-beginning-position)))
                  (out-beg (and in-end
-                               (devops-agentic--search-marker "start" id nil)
+                               (devops-scripting--search-marker "start" id nil)
                                (line-beginning-position 2)))
                  (out-end (and out-beg
-                               (devops-agentic--search-marker "end" id nil))))
+                               (devops-scripting--search-marker "end" id nil))))
             (push `((:id . ,id)
                     (:input . ,(if in-end
                                    (buffer-substring-no-properties in-beg in-end)
                                  ""))
                     (:output . ,(if out-beg
                                     (string-trim
-                                     (devops-agentic--unprompt
+                                     (devops-scripting--unprompt
                                       (buffer-substring-no-properties
                                        (min out-beg (point-max))
                                        (or out-end (point-max)))
@@ -171,7 +179,7 @@ the session's prompts removed."
                   runs))))
       (nreverse runs))))
 
-(defun devops-agentic--sent-p (body input)
+(defun devops-scripting--sent-p (body input)
   "Whether INPUT, as a session echoed it, is BODY sent.
 Lines holding a noweb reference are skipped, because what was sent is
 their expansion."
@@ -181,23 +189,23 @@ their expansion."
                                  (string-search "<<" line)))
                            (mapcar #'string-trim (split-string body "\n")))))
 
-(defun devops-agentic--block-run (runs result body)
+(defun devops-scripting--block-run (runs result body)
   "Return the run in RUNS of the block with RESULT and BODY, or nil.
 The run whose ID is still in RESULT, else the latest that sent BODY: once
 a block finishes its ID gives way to the output in #+RESULTS, and the
 body is what is left to know it by."
   (let ((id (and result
-                 (string-match devops-agentic--uuid-regexp result)
+                 (string-match devops-scripting--uuid-regexp result)
                  (match-string 0 result))))
     (or (and id (seq-find (lambda (run) (equal id (alist-get :id run))) runs))
         (car (last (seq-filter
-                    (lambda (run) (devops-agentic--sent-p
+                    (lambda (run) (devops-scripting--sent-p
                                    body (alist-get :input run)))
                     runs))))))
 
 ;;; Results
 
-(defun devops-agentic--results-text ()
+(defun devops-scripting--results-text ()
   "Return the #+RESULTS of the src block at point as text, or nil.
 The text as it reads, without org's markup: no colon prefixes on a
 fixed-width result, no example block or drawer delimiters, a table as
@@ -219,15 +227,15 @@ list -- data for a block's :var, but noise to a reader."
                (or (org-element-property :contents-end el)
                    (org-babel-result-end))))))))))
 
-(defun devops-agentic--placeholder-p (result)
+(defun devops-scripting--placeholder-p (result)
   "Whether RESULT is only the UUID an async block leaves while it runs."
   (and result
-       (string-match-p (concat "\\`" devops-agentic--uuid-regexp "\\'")
+       (string-match-p (concat "\\`" devops-scripting--uuid-regexp "\\'")
                        (string-trim result))))
 
 ;;; Blocks
 
-(defun devops-agentic--src-block-at (line)
+(defun devops-scripting--src-block-at (line)
   "Move to LINE and return the src block there, or signal a `user-error'.
 LINE may be any line of the block, its header or its body."
   (goto-char (point-min))
@@ -239,7 +247,7 @@ LINE may be any line of the block, its header or its body."
     el))
 
 ;;;###autoload
-(defun devops-block-output (source line &optional tag)
+(defun devops-scripting-block-output (source line &optional tag)
   "Return what the src block at LINE of SOURCE printed.
 SOURCE is an org buffer or file name, and LINE any line of the block.
 TAG names the target when the block's heading has more than one.
@@ -265,21 +273,21 @@ placeholder there is not output, and :output is nil.
 Nothing is run.  The session name is the one devops.el would use, so a
 dynamic target is resolved, and that runs its block; see
 `devops--resolve-target-for-tag'."
-  (with-current-buffer (devops-agentic--source-buffer source)
+  (with-current-buffer (devops-scripting--source-buffer source)
     (save-excursion
-      (let* ((el (devops-agentic--src-block-at line))
-             (pair (devops-agentic--target tag))
+      (let* ((el (devops-scripting--src-block-at line))
+             (pair (devops-scripting--target tag))
              (name (devops--session-name (car pair) (cdr pair)))
-             (result (devops-agentic--results-text))
+             (result (devops-scripting--results-text))
              (session (get-buffer name))
              (run (and session
-                       (devops-agentic--block-run
-                        (devops-agentic--runs session)
+                       (devops-scripting--block-run
+                        (devops-scripting--runs session)
                         result
                         (org-element-property :value el))))
              (source (cond (run :session)
                            ((and result
-                                 (not (devops-agentic--placeholder-p result)))
+                                 (not (devops-scripting--placeholder-p result)))
                             :results))))
         `((:session . ,name)
           (:status . ,(cond ((not session) :no-session)
@@ -295,13 +303,13 @@ dynamic target is resolved, and that runs its block; see
 
 ;;; Sessions
 
-(defun devops-agentic--session-p (buf)
+(defun devops-scripting--session-p (buf)
   "Whether BUF is a babel session that has run async blocks.
 `org-babel-comint-async-register' leaves the marker regexp buffer-local
 in every session it attaches to; nothing else does."
   (local-variable-p 'org-babel-comint-async-indicator buf))
 
-(defun devops-agentic--pending-prompt (buf)
+(defun devops-scripting--pending-prompt (buf)
   "Return the text BUF ends on when it waits for input, or nil.
 Output arrives a line at a time, so a session that ends partway through
 a line, on something that is not its own prompt, is a program asking --
@@ -313,13 +321,13 @@ a line, on something that is not its own prompt, is a program asking --
                    (line-beginning-position) (point-max))))
         (unless (or (string-blank-p tail)
                     (string-empty-p
-                     (string-trim (devops-agentic--unprompt
+                     (string-trim (devops-scripting--unprompt
                                    tail comint-prompt-regexp))))
-          (string-trim (devops-agentic--unprompt
+          (string-trim (devops-scripting--unprompt
                         tail comint-prompt-regexp)))))))
 
 ;;;###autoload
-(defun devops-sessions ()
+(defun devops-scripting-sessions ()
   "Return every live babel async session, as a list of alists.
 
   :name       the session buffer's name
@@ -334,11 +342,11 @@ only those devops.el named, because `devops-session-name-function' can
 name them anything."
   (let (sessions)
     (dolist (buf (buffer-list))
-      (when (and (devops-agentic--session-p buf)
+      (when (and (devops-scripting--session-p buf)
                  (comint-check-proc buf))
-        (let* ((last (car (last (devops-agentic--runs buf))))
+        (let* ((last (car (last (devops-scripting--runs buf))))
                (running (and last (not (alist-get :done last))))
-               (prompt (and running (devops-agentic--pending-prompt buf))))
+               (prompt (and running (devops-scripting--pending-prompt buf))))
           (push `((:name . ,(buffer-name buf))
                   (:directory . ,(buffer-local-value 'default-directory buf))
                   (:state . ,(cond (prompt :waiting)
@@ -349,6 +357,100 @@ name them anything."
                 sessions))))
     (nreverse sessions)))
 
-(provide 'devops-agentic)
+;;; Execution log
 
-;;; devops-agentic.el ends here
+(defcustom devops-scripting-execution-log "~/.cache/devops/executions.jsonl"
+  "File that `devops-scripting-log-mode' appends a line to per block run.
+Each line is a JSON object, so an agent can follow the file with
+`tail -F' and learn that the user ran a block without being told.  The
+directory is created on the first write."
+  :type 'file
+  :group 'devops)
+
+(defvar devops-scripting--async-result nil
+  "Non-nil while ob-comint inserts the result of an async run.
+Bound by `devops-scripting--during-async-filter', so that
+`devops-scripting--log-async-result' logs only that insertion, not every
+result a block inserts.")
+
+(defun devops-scripting--log-entry (event pos)
+  "Return the log entry for EVENT on the src block at POS, an alist.
+The block's `devops-scripting-block-output' answer, with the time, the
+event, and where the block is.  A block that answer cannot be had for --
+a heading with no target, or two -- is logged with the error and its
+#+RESULTS."
+  (let ((line (line-number-at-pos pos)))
+    `((:time . ,(format-time-string "%FT%T%z"))
+      (:event . ,event)
+      (:file . ,(buffer-file-name (buffer-base-buffer)))
+      (:buffer . ,(buffer-name))
+      (:line . ,line)
+      ,@(condition-case err
+            (devops-scripting-block-output (current-buffer) line)
+          (error `((:error . ,(error-message-string err))
+                   (:result . ,(save-excursion
+                                 (goto-char pos)
+                                 (devops-scripting--results-text)))))))))
+
+(defun devops-scripting--log (event pos)
+  "Append the entry for EVENT on the src block at POS to the log.
+Scripted evaluation -- a reference, a dynamic target, tangling -- runs
+blocks under `devops-with-sync', and those runs are not the user's, so
+they are not logged."
+  (when (and devops-scripting-execution-log (not devops--inhibit-async))
+    (let ((file (expand-file-name devops-scripting-execution-log))
+          (entry (concat (json-encode (devops-scripting--log-entry event pos))
+                         "\n")))
+      (make-directory (file-name-directory file) t)
+      (write-region entry nil file t 'silent))))
+
+(defun devops-scripting--log-execution ()
+  "Log the src block just executed, for `org-babel-after-execute-hook'.
+An async block has only started: its status is `:running', and its
+result is logged again by `devops-scripting--log-async-result'."
+  (when org-babel-current-src-block-location
+    (devops-scripting--log "execute" org-babel-current-src-block-location)))
+
+(defun devops-scripting--during-async-filter (fn &rest args)
+  "Run FN, `org-babel-comint-async-filter', with ARGS, logging results.
+ob-comint runs no hook when an async result arrives; it calls
+`org-babel-insert-result' from this filter, with point on the block."
+  (let ((devops-scripting--async-result t))
+    (apply fn args)))
+
+(defun devops-scripting--log-async-result (fn &rest args)
+  "Run FN, `org-babel-insert-result', with ARGS; log an async result.
+Point is on the block before FN runs, which may move it."
+  (let ((pos (point)))
+    (prog1 (apply fn args)
+      (when devops-scripting--async-result
+        (let ((devops-scripting--async-result nil))
+          (devops-scripting--log "result" pos))))))
+
+;;;###autoload
+(define-minor-mode devops-scripting-log-mode
+  "Log each src block run to `devops-scripting-execution-log'.
+A line is written when a block runs, and for an async block again when
+its result arrives.  Each is the block's
+`devops-scripting-block-output' with `event' (\"execute\" or
+\"result\"), `time', `file', `buffer' and `line'."
+  :global t
+  :group 'devops
+  (if devops-scripting-log-mode
+      (progn
+        (add-hook 'org-babel-after-execute-hook
+                  #'devops-scripting--log-execution)
+        (advice-add 'org-babel-comint-async-filter :around
+                    #'devops-scripting--during-async-filter)
+        (advice-add 'org-babel-insert-result :around
+                    #'devops-scripting--log-async-result))
+    (remove-hook 'org-babel-after-execute-hook
+                 #'devops-scripting--log-execution)
+    (advice-remove 'org-babel-comint-async-filter
+                   #'devops-scripting--during-async-filter)
+    (advice-remove 'org-babel-insert-result
+                   #'devops-scripting--log-async-result)))
+
+(provide 'devops-scripting)
+
+;;; devops-scripting.el ends here

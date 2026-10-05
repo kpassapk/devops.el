@@ -8,7 +8,7 @@
 (require 'devops)
 (require 'devops-lob)
 (require 'devops-drift)
-(require 'devops-agentic)
+(require 'devops-scripting)
 
 (devops-mode 1)
 
@@ -1968,7 +1968,7 @@ afterwards), in an org buffer visiting the formatted text."
                                 (devops-test--indicator-overlays (point)))))))
             (when (buffer-live-p report) (kill-buffer report))))))))
 
-;;; Agent tools (devops-agentic.el)
+;;; Scripting (devops-scripting.el)
 
 (defconst devops-test--prompt "\U000121b8\ufeff "
   "The prompt ob-shell sets in its sessions, `org-babel-sh-prompt'.")
@@ -2014,10 +2014,10 @@ the buffer-local marker regexp -- without a shell behind it."
             (devops-test--run-text devops-test--run-b "echo two"
                                    (concat p "two\n") b-done))))
 
-(ert-deftest devops-agentic--runs-test ()
+(ert-deftest devops-scripting--runs-test ()
   "Each run's input and output are cut at its markers, prompts removed."
   (devops-test--with-transcript "devops-test-session" (devops-test--transcript)
-    (let ((runs (devops-agentic--runs (get-buffer "devops-test-session"))))
+    (let ((runs (devops-scripting--runs (get-buffer "devops-test-session"))))
       (should (equal (mapcar (lambda (r) (alist-get :id r)) runs)
                      (list devops-test--run-a devops-test--run-b)))
       (should (equal (alist-get :input (car runs)) "echo one\nls /nope\n"))
@@ -2027,23 +2027,23 @@ the buffer-local marker regexp -- without a shell behind it."
       (should (equal (alist-get :output (cadr runs)) "two"))
       (should-not (alist-get :done (cadr runs))))))
 
-(ert-deftest devops-agentic--block-run-test ()
+(ert-deftest devops-scripting--block-run-test ()
   "A run is found by the ID in #+RESULTS, else by the body it sent."
   (devops-test--with-transcript "devops-test-session" (devops-test--transcript)
-    (let ((runs (devops-agentic--runs (get-buffer "devops-test-session")))
+    (let ((runs (devops-scripting--runs (get-buffer "devops-test-session")))
           (id (lambda (run) (alist-get :id run))))
-      (should (equal (funcall id (devops-agentic--block-run
+      (should (equal (funcall id (devops-scripting--block-run
                                   runs devops-test--run-a "anything"))
                      devops-test--run-a))
-      (should (equal (funcall id (devops-agentic--block-run
+      (should (equal (funcall id (devops-scripting--block-run
                                   runs "one" "echo one\nls /nope"))
                      devops-test--run-a))
-      (should (equal (funcall id (devops-agentic--block-run
+      (should (equal (funcall id (devops-scripting--block-run
                                   runs nil "<<creds()>>\necho two"))
                      devops-test--run-b))
-      (should-not (devops-agentic--block-run runs nil "echo three")))))
+      (should-not (devops-scripting--block-run runs nil "echo three")))))
 
-(ert-deftest devops-block-output-test ()
+(ert-deftest devops-scripting-block-output-test ()
   "The output of the block at a line, from the heading's session."
   (devops-test--with-transcript "devops:local /srv/app/" (devops-test--transcript)
     (devops-test--with-org
@@ -2053,23 +2053,23 @@ the buffer-local marker regexp -- without a shell behind it."
                 "#+RESULTS:\n: one\n\n"
                 "#+begin_src sh\necho two\n#+end_src\n\n"
                 "#+begin_src sh\necho three\n#+end_src\n")
-      (let ((out (devops-block-output (current-buffer) 6)))
+      (let ((out (devops-scripting-block-output (current-buffer) 6)))
         (should (equal (alist-get :session out) "devops:local /srv/app/"))
         (should (eq (alist-get :status out) :done))
         (should (equal (alist-get :id out) devops-test--run-a))
         (should (eq (alist-get :source out) :session))
         (should (equal (alist-get :output out) "one\nls: /nope: No such file"))
         (should (equal (alist-get :result out) "one")))
-      (should (eq (alist-get :status (devops-block-output (current-buffer) 13))
+      (should (eq (alist-get :status (devops-scripting-block-output (current-buffer) 13))
                   :running))
-      (should (eq (alist-get :status (devops-block-output (current-buffer) 17))
+      (should (eq (alist-get :status (devops-scripting-block-output (current-buffer) 17))
                   :not-found))
-      (should-error (devops-block-output (current-buffer) 3) :type 'user-error))))
+      (should-error (devops-scripting-block-output (current-buffer) 3) :type 'user-error))))
 
-(ert-deftest devops-block-output-no-session-test ()
+(ert-deftest devops-scripting-block-output-no-session-test ()
   "Without a session buffer or a result there is no output."
   (devops-test--with-session-org ""
-    (let ((out (devops-block-output (current-buffer) 6)))
+    (let ((out (devops-scripting-block-output (current-buffer) 6)))
       (should (eq (alist-get :status out) :no-session))
       (should-not (alist-get :source out))
       (should-not (alist-get :output out)))))
@@ -2085,44 +2085,44 @@ The block's body is on line 6."
                "#+RESULTS:\n" ,result)
      ,@body))
 
-(ert-deftest devops-block-output-results-fallback-test ()
+(ert-deftest devops-scripting-block-output-results-fallback-test ()
   "With no session, #+RESULTS is the output, without its colons."
   (devops-test--with-result-org ": hi\n: there\n"
-    (let ((out (devops-block-output (current-buffer) 6)))
+    (let ((out (devops-scripting-block-output (current-buffer) 6)))
       (should (eq (alist-get :status out) :no-session))
       (should (eq (alist-get :source out) :results))
       (should (equal (alist-get :output out) "hi\nthere")))))
 
-(ert-deftest devops-block-output-results-not-found-test ()
+(ert-deftest devops-scripting-block-output-results-not-found-test ()
   "A session that never ran the block falls back to #+RESULTS too."
   (devops-test--with-transcript "devops:local /srv/app/" (devops-test--transcript)
     (devops-test--with-result-org ": hi\n"
-      (let ((out (devops-block-output (current-buffer) 6)))
+      (let ((out (devops-scripting-block-output (current-buffer) 6)))
         (should (eq (alist-get :status out) :not-found))
         (should (eq (alist-get :source out) :results))
         (should (equal (alist-get :output out) "hi"))))))
 
-(ert-deftest devops-block-output-results-table-test ()
+(ert-deftest devops-scripting-block-output-results-table-test ()
   "A table result reads as its rows, not as a list."
   (devops-test--with-result-org "| a | 1 |\n| b | 2 |\n"
-    (should (equal (alist-get :output (devops-block-output (current-buffer) 6))
+    (should (equal (alist-get :output (devops-scripting-block-output (current-buffer) 6))
                    "| a | 1 |\n| b | 2 |"))))
 
-(ert-deftest devops-block-output-results-drawer-test ()
+(ert-deftest devops-scripting-block-output-results-drawer-test ()
   "A :results drawer reads as its contents."
   (devops-test--with-result-org ":RESULTS:\nhi\n:END:\n"
-    (should (equal (alist-get :output (devops-block-output (current-buffer) 6))
+    (should (equal (alist-get :output (devops-scripting-block-output (current-buffer) 6))
                    "hi"))))
 
-(ert-deftest devops-block-output-placeholder-test ()
+(ert-deftest devops-scripting-block-output-placeholder-test ()
   "A placeholder UUID left in #+RESULTS is not output."
   (devops-test--with-result-org (concat ": " devops-test--run-a "\n")
-    (let ((out (devops-block-output (current-buffer) 6)))
+    (let ((out (devops-scripting-block-output (current-buffer) 6)))
       (should-not (alist-get :source out))
       (should-not (alist-get :output out))
       (should (equal (alist-get :result out) devops-test--run-a)))))
 
-(ert-deftest devops-block-output-two-targets-test ()
+(ert-deftest devops-scripting-block-output-two-targets-test ()
   "A heading with two targets is an error naming them, not a prompt."
   (devops-test--with-org
       (concat "#+TARGET: /srv/a/ (a)\n#+TARGET: /srv/b/ (b)\n\n"
@@ -2130,22 +2130,22 @@ The block's body is on line 6."
               "#+begin_src sh\npwd\n#+end_src\n")
     (cl-letf (((symbol-function 'completing-read)
                (lambda (&rest _) (error "Prompted"))))
-      (should-error (devops-block-output (current-buffer) 7) :type 'user-error)
-      (should (equal (alist-get :session (devops-block-output (current-buffer) 7 "b"))
+      (should-error (devops-scripting-block-output (current-buffer) 7) :type 'user-error)
+      (should (equal (alist-get :session (devops-scripting-block-output (current-buffer) 7 "b"))
                      "devops:b /srv/b/")))))
 
-(ert-deftest devops-agentic--pending-prompt-test ()
+(ert-deftest devops-scripting--pending-prompt-test ()
   "A session ending partway through a line, not on its prompt, is waiting."
   (devops-test--with-transcript "devops-test-session"
       (concat (devops-test--transcript) "[sudo] password for app: ")
-    (should (equal (devops-agentic--pending-prompt
+    (should (equal (devops-scripting--pending-prompt
                     (get-buffer "devops-test-session"))
                    "[sudo] password for app:")))
   (devops-test--with-transcript "devops-test-session" (devops-test--transcript t)
-    (should-not (devops-agentic--pending-prompt
+    (should-not (devops-scripting--pending-prompt
                  (get-buffer "devops-test-session")))))
 
-(ert-deftest devops-sessions-executes-test ()
+(ert-deftest devops-scripting-sessions-executes-test ()
   "A real async session is listed, idle once its block has finished."
   (let ((devops-enable-session-async t))
     (devops-test--with-local-target target
@@ -2166,17 +2166,96 @@ The block's body is on line 6."
                               (goto-char (point-min))
                               (search-forward uuid nil t)))
                   (accept-process-output nil 0.2))
-                (let ((out (devops-block-output (current-buffer) 6)))
+                (let ((out (devops-scripting-block-output (current-buffer) 6)))
                   (should (eq (alist-get :status out) :done))
                   (should (equal (alist-get :id out) uuid))
                   (should (eq (alist-get :source out) :session))
                   (should (string-match-p "\\`hi\n.*nonexistent-devops"
                                           (alist-get :output out))))
                 (let ((s (seq-find (lambda (s) (equal (alist-get :name s) session))
-                                   (devops-sessions))))
+                                   (devops-scripting-sessions))))
                   (should s)
                   (should (eq (alist-get :state s) :idle))
                   (should (equal (alist-get :id s) uuid)))))
+          (when-let* ((buf (get-buffer session)))
+            (let ((kill-buffer-query-functions nil))
+              (kill-buffer buf))))))))
+
+(defmacro devops-test--with-execution-log (log-var &rest body)
+  "Run BODY with `devops-scripting-log-mode' on, logging to LOG-VAR.
+LOG-VAR is bound to a temp file name, under a directory that does not
+exist yet.  The mode is turned off and the directory removed after."
+  (declare (indent 1))
+  `(let* ((dir (make-temp-file "devops-log-" t))
+          (,log-var (expand-file-name "sub/executions.jsonl" dir))
+          (devops-scripting-execution-log ,log-var))
+     (unwind-protect
+         (progn (devops-scripting-log-mode 1) ,@body)
+       (devops-scripting-log-mode -1)
+       (delete-directory dir t))))
+
+(defun devops-test--log-entries (file)
+  "The entries of the execution log FILE, as alists, oldest first."
+  (with-temp-buffer
+    (insert-file-contents file)
+    (mapcar (lambda (line) (json-parse-string line :object-type 'alist))
+            (split-string (buffer-string) "\n" t))))
+
+(ert-deftest devops-scripting-log-mode-sync-test ()
+  "A synchronous run is logged once, with its result and an error.
+The block's heading has no target, so `devops-scripting-block-output'
+fails, and the entry holds why along with #+RESULTS."
+  (devops-test--with-execution-log log
+    (devops-test--with-org "* Run\n\n#+begin_src emacs-lisp\n(+ 1 2)\n#+end_src\n"
+      (goto-char (point-min))
+      (re-search-forward "begin_src")
+      (let ((org-confirm-babel-evaluate nil))
+        (org-babel-execute-src-block))
+      (let ((entries (devops-test--log-entries log)))
+        (should (= 1 (length entries)))
+        (should (equal (alist-get 'event (car entries)) "execute"))
+        (should (equal (alist-get 'line (car entries)) 3))
+        (should (equal (alist-get 'result (car entries)) "3"))
+        (should (alist-get 'error (car entries)))))))
+
+(ert-deftest devops-scripting-log-mode-scripted-test ()
+  "A run under `devops-with-sync' is not the user's, and is not logged."
+  (devops-test--with-execution-log log
+    (devops-test--with-org "#+begin_src emacs-lisp\n(+ 1 2)\n#+end_src\n"
+      (goto-char (point-min))
+      (let ((org-confirm-babel-evaluate nil))
+        (devops-with-sync (org-babel-execute-src-block)))
+      (should-not (file-exists-p log)))))
+
+(ert-deftest devops-scripting-log-mode-async-test ()
+  "An async run is logged when it starts and again when its result lands."
+  (let ((devops-enable-session-async t))
+    (devops-test--with-local-target target
+      (let ((session (devops--session-name "local" target)))
+        (unwind-protect
+            (devops-test--with-execution-log log
+              (devops-test--with-org
+                  (format (concat "#+TARGET: %s (local)\n\n"
+                                  "* Run\t\t:local:\n\n"
+                                  "#+begin_src sh\necho hi\n#+end_src\n")
+                          target)
+                (goto-char (point-min))
+                (re-search-forward "begin_src")
+                (let* ((org-confirm-babel-evaluate nil)
+                       (uuid (org-babel-execute-src-block))
+                       (deadline (+ (float-time) 30)))
+                  (while (and (< (float-time) deadline)
+                              (< (length (devops-test--log-entries log)) 2))
+                    (accept-process-output nil 0.2))
+                  (let ((entries (devops-test--log-entries log)))
+                    (should (equal (mapcar (lambda (e) (alist-get 'event e))
+                                           entries)
+                                   '("execute" "result")))
+                    (should (equal (alist-get 'status (car entries)) "running"))
+                    (should (equal (alist-get 'id (car entries)) uuid))
+                    (should (equal (alist-get 'line (cadr entries)) 5))
+                    (should (equal (alist-get 'status (cadr entries)) "done"))
+                    (should (equal (alist-get 'output (cadr entries)) "hi"))))))
           (when-let* ((buf (get-buffer session)))
             (let ((kill-buffer-query-functions nil))
               (kill-buffer buf))))))))
