@@ -13,7 +13,8 @@ From [MELPA](https://melpa.org/#/devops):
 
 ```
 (use-package devops
-  :ensure t)
+  :ensure t
+  :config (devops-mode 1))
 ```
 
 Or straight from GitHub:
@@ -21,7 +22,8 @@ Or straight from GitHub:
 ```
 (use-package devops
   :ensure t
-  :vc (:url "https://github.com/kpassapk/devops.el"))
+  :vc (:url "https://github.com/kpassapk/devops.el")
+  :config (devops-mode 1))
 ```
 
 ## Why?
@@ -334,16 +336,17 @@ shell. The source block content is copied to the clipboard, so you can do
 
 Any project with a `tools.org` at its root can expose named org-babel blocks as reusable tools. `devops-lob` loads and unloads these per-project.
 
-```elisp
-(use-package devops-lob
-  :ensure t
-  :vc (:url "https://github.com/kpassapk/devops.el"
-       :main-file "devops-lob.el")
-  :hook
-  (after-init . (lambda () (devops-lob-auto-mode 1))))
-```
-
 With `devops-lob-auto-mode` enabled, opening any file in a project that has `tools.org` automatically loads its named blocks into the org-babel Library of Babel.
+
+Setup:
+
+```elisp
+(use-package devops
+  :ensure t
+  :config
+  (devops-mode 1)
+  (devops-lob-auto-mode 1))
+```
 
 ### tools.org commands
 

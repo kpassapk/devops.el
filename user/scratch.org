@@ -3,7 +3,6 @@
 
 * Scratch                                                           :project:
 
-
 #+begin_src sh
   mkdir -p .github/workflows
   curl -o .github/workflows/melpazoid.yml \
@@ -18,7 +17,7 @@
 
 * Melpazoid                                                       :melpazoid:
 
-melpa feedback from https://github.com/melpa/melpa/pull/10258
+melpa feedback from https://github.com/melpa/melpa/pull/10258 on commit =98c1766=
 
 #+begin_example
 ━ devops.el with melpazoid:
@@ -31,29 +30,6 @@ melpa feedback from https://github.com/melpa/melpa/pull/10258
 - devops.el:584:1: Prefer a minor mode to top-level advice. If you can't, ensure you support `(unload-feature)`
 #+end_example
 
-Try to replicate issues:
-
-#+begin_src sh
-  RECIPE='(devops :fetcher github :repo "kpassapk/devops.el")' \
-  LOCAL_REPO='~/src/github.com/kpassapk/devops.el' \
-  RUNNER='uv run' make
-#+end_src
-
-#+RESULTS:
-#+begin_example
-uv run mypy melpazoid
-Success: no issues found in 1 source file
-uv run python3 melpazoid/melpazoid.py
-Using local repository at /Users/kyle/src/github.com/kpassapk/devops.el
-
-— Package and license:
-- (Repository)                             GNU General Public License v3.0
-- Created: 2026/Mar/11 08:40 PM (207 days ago)
-- Updated: 2026/Oct/02 11:07 AM (3 days ago)
-- Watched: 29
-#+end_example
-
-
 #+begin_src sh
   open -a Docker
   until docker info >/dev/null 2>&1; do sleep 2; done
@@ -61,15 +37,11 @@ Using local repository at /Users/kyle/src/github.com/kpassapk/devops.el
 #+end_src
 
 #+RESULTS:
-: CONTAINER ID   IMAGE                                    COMMAND                  CREATED        STATUS                  PORTS                                                             NAMES
-: bdea0d74575e   lscr.io/linuxserver/libreoffice:latest   "/init"                  5 months ago   Up Less than a second   0.0.0.0:3000-3001->3000-3001/tcp, [::]:3000-3001->3000-3001/tcp   libreoffice
-: fe64a88db8a9   postgres:17                              "docker-entrypoint.s…"   7 months ago   Up Less than a second   5432/tcp                                                          hub-hub-postgres-1
-: ccca49814ee2   redis:8.2.1-alpine                       "docker-entrypoint.s…"   7 months ago   Up Less than a second   6379/tcp                                                          hub-hub-redis-1
-
+: CONTAINER ID   IMAGE     COMMAND   CREATED   STATUS    PORTS     NAMES
 
 #+begin_src sh
-  MELPA_PR_URL=https://github.com/melpa/melpa/pull/10258 \
-  RUNNER='uv run' make 2>&1
+  RECIPE='(devops :fetcher github :repo "kpassapk/devops.el" :branch "melpazoid")' \
+  RUNNER='uv run' make 2>&1  
 #+end_src
 
 #+RESULTS:
@@ -77,12 +49,12 @@ Using local repository at /Users/kyle/src/github.com/kpassapk/devops.el
 uv run mypy melpazoid
 Success: no issues found in 1 source file
 uv run python3 melpazoid/melpazoid.py
-<!-- Cloning https://github.com/kpassapk/devops.el  -->
+<!-- Cloning https://github.com/kpassapk/devops.el @melpazoid -->
 <!-- Building container for devops... 🐳 -->
-sha256:45678cec9cbaa3860f2734eb4d6f94ff8ff1c34be202650b829987b3f4d39255
+sha256:64ff7d1990a15478ce77f1ab30c853ee6e05280687a3c495733f13faead9977f
 
 <!-- Running tests... -->
-sha256:cc64cf99dabbe0deefff3b0296cbeed6e7ecb37e0f284b003375b15d64343020
+sha256:ad9e8bccb1c4077d2b756280064f6fca5671528b85c2cd6b8858e85d7418482e
 
 ━ `devops.el` with [melpazoid](https://github.com/riscy/melpazoid):
 ```
@@ -95,17 +67,14 @@ sha256:cc64cf99dabbe0deefff3b0296cbeed6e7ecb37e0f284b003375b15d64343020
 ```
 
 — Package and license:
+- Avoid `:branch` in recipes except in unusual cases
 - (Repository)                             GNU General Public License v3.0
 - devops.el                                GPL*, 913 loc
 - devops-lob.el                            GPL*, 132 loc
 - devops-drift.el                          GPL*, 520 loc
-
-<!-- PR reviewer footnotes:
-(devops
-    :fetcher github
-    :repo "kpassapk/devops.el")
 - Created: 2026/Mar/11 08:40 PM (207 days ago)
 - Updated: 2026/Oct/02 11:07 AM (3 days ago)
 - Watched: 29
--->
 #+end_example
+
+

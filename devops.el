@@ -25,12 +25,40 @@
 
 ;;; Commentary:
 ;;
-;; `devops.el' offers utilities for running commands on local and remote
-;; machines using org mode.
+;; `devops.el' adds TARGET syntax for running org-babel commands
+;; on remote servers.
 ;;
-;; Emacs 30.1 is the baseline, so the bundled org is 9.7 or newer: that
-;; is where `ob-shell' gained the `:async' support
-;; `devops-enable-session-async' relies on.
+;; Example: 
+;;
+;; #+TARGET: /ssh:example1.com: (server1)
+;; #+TARGET: /ssh:example2.com: (server2)
+;;
+;; * Do something on server1               :server1:
+;; 
+;; #+BEGIN_SRC sh
+;; hostname
+;; #+END_SRC
+;;
+;; #+RESULTS:
+;; : example1.com
+;; 
+;; * Do something on server2               :server2:
+;; 
+;; #+BEGIN_SRC sh
+;; hostname
+;; #+END_SRC
+;;
+;; #+RESULTS:
+;; : example2.com
+;;
+;; This helps separate "what to run" and "where to run it".
+;;
+;; Building on this syntax, `devops.el' supports
+;; - multiple targets
+;; - async execution
+;; - tangling (uploading) files to remote servers
+;; - drift detection
+;; - DWIM shell commands
 
 ;;; Code:
 
@@ -248,8 +276,8 @@ arrives as \"nil\".  A genuine nil is accepted too, for params passed to
 INFO is the info given to `org-babel-execute-src-block', or nil when
 point is on the block."
   (or info
-      (ignore-errors
-        (org-babel-get-src-block-info 'no-eval))))
+      (and (derived-mode-p 'org-mode)
+           (org-babel-get-src-block-info 'no-eval))))
 
 (defun devops--block-params (info)
   "Return the header arguments of the src block being executed.
@@ -295,7 +323,8 @@ Returns nil when point is not on a src block."
     (cl-progv (cons 'org-babel-default-header-args
                     (and lang-default (list lang-default)))
         nil
-      (nth 2 (ignore-errors (org-babel-get-src-block-info 'no-eval))))))
+      (and (derived-mode-p 'org-mode)
+           (nth 2 (org-babel-get-src-block-info 'no-eval))))))
 
 (defun devops--session-declared-p (params block-params lang)
   "Non-nil when the block, not org, decided its `:session'.
@@ -419,9 +448,6 @@ which is how a block ran without its EXECUTOR-TYPE on org 9.6."
             (args (append args (make-list (max 0 (- 3 (length args))) nil))))
         (append (list (nth 0 args) (nth 1 args) params) (nthcdr 3 args))))))
 
-(advice-add 'org-babel-execute-src-block :filter-args
-            #'devops--inject-header-args-from-tags)
-
 (defun devops--resolve-ref-sync (fn &rest args)
   "Run `org-babel-ref-resolve' (FN with ARGS) under `devops-with-sync'.
 Resolving a reference -- a `:var' naming a block, a `#+call:' argument,
@@ -432,7 +458,28 @@ filter later mistakes the caller's result for the reference's."
   (devops-with-sync
     (apply fn args)))
 
-(advice-add 'org-babel-ref-resolve :around #'devops--resolve-ref-sync)
+
+;;;###autoload
+(define-minor-mode devops-mode
+  "Run org-babel blocks on the target their heading's tag names.
+With the mode on, a block under a heading whose tag a #+TARGET keyword
+maps gets that target as its :dir (and, see
+`devops-enable-session-async', a session), and a reference to a block --
+a `:var', a `#+call:' argument, a noweb `<<name()>>' -- is resolved
+synchronously.  Off, org evaluates blocks as it would without devops.
+The mode only adds and removes advice on org functions; `devops-tangle'
+and `devops-drift' redirect files whether it is on or not."
+  :global t
+  :group 'devops
+  (if devops-mode
+      (progn
+        (advice-add 'org-babel-execute-src-block :filter-args
+                    #'devops--inject-header-args-from-tags)
+        (advice-add 'org-babel-ref-resolve :around
+                    #'devops--resolve-ref-sync))
+    (advice-remove 'org-babel-execute-src-block
+                   #'devops--inject-header-args-from-tags)
+    (advice-remove 'org-babel-ref-resolve #'devops--resolve-ref-sync)))
 
 (defun devops--heading-session-name ()
   "Return the session name for the current heading's target.
@@ -581,9 +628,6 @@ as the deployed file's does."
       (mapcar (lambda (cell) (cons (car cell) (nreverse (cdr cell))))
               (nreverse out)))))
 
-(advice-add 'org-babel-tangle-collect-blocks
-            :filter-return #'devops--redirect-tangle-plan)
-
 (defun devops--tangle-subtree (source-buf heading-pos redirect)
   "Tangle the subtree at HEADING-POS in SOURCE-BUF, sending blocks by REDIRECT.
 REDIRECT is bound as `devops--tangle-redirect' for the duration.  Return
@@ -599,7 +643,11 @@ arguments resolve as they always do, inherited from parent headings and
 A buffer that visits no file is lent a file name meanwhile, because
 `org-babel-tangle' resolves paths against one and fails without it.  The
 name is in the buffer's directory, so blocks resolve against that, and
-names no file, so no other buffer can be visiting it."
+names no file, so no other buffer can be visiting it.
+
+The plan is redirected by an advice on `org-babel-tangle-collect-blocks'
+that is in place only while this runs, so an `org-babel-tangle' of the
+user's own never passes through devops."
   (with-current-buffer source-buf
     (let ((org-babel-pre-tangle-hook
            (remq 'save-buffer org-babel-pre-tangle-hook))
@@ -609,12 +657,17 @@ names no file, so no other buffer can be visiting it."
                      (goto-char heading-pos)
                      (org-narrow-to-subtree)
                      (org-babel-tangle)))))
-      ;; Not `org-base-buffer-file-name', which Org 9.7 lacks.
-      (if (buffer-file-name (buffer-base-buffer))
-          (funcall tangle)
-        (let ((buffer-file-name
-               (make-temp-name (expand-file-name "devops-unsaved-"))))
-          (funcall tangle))))))
+      (advice-add 'org-babel-tangle-collect-blocks
+                  :filter-return #'devops--redirect-tangle-plan)
+      (unwind-protect
+          ;; Not `org-base-buffer-file-name', which Org 9.7 lacks.
+          (if (buffer-file-name (buffer-base-buffer))
+              (funcall tangle)
+            (let ((buffer-file-name
+                   (make-temp-name (expand-file-name "devops-unsaved-"))))
+              (funcall tangle)))
+        (advice-remove 'org-babel-tangle-collect-blocks
+                       #'devops--redirect-tangle-plan)))))
 
 (defun devops--tangle-destination (target path params file)
   "Return the file a block with :tangle PATH is written to on TARGET.
@@ -808,11 +861,6 @@ ARG, visit it in another window."
      (t
       (message "No tangle paths found.")))))
 
-;;;###autoload
-(defalias 'devops-ingest-tool-blocks 'devops-lob-load-project-tools
-  "Load tools.org from current project root into the org-babel LOB.
-Deprecated alias for `devops-lob-load-project-tools'.")
-
 (defun devops-org-tool-blocks (&optional regexp)
   "Return a summary of org-babel library of babel entries.
 Filter by REGEXP if provided."
@@ -906,6 +954,12 @@ In a src block, if the : copies body to clipboard and exports :var env vars."
       (kill-new (devops--src-block-body))
       (message "Source block copied to kill ring."))
     (devops--open-terminal-at-dir dir env-vars)))
+
+(defun devops-unload-function ()
+  "Turn `devops-mode' off, so `unload-feature' leaves no advice behind.
+Return nil, so the rest of the unloading proceeds as usual."
+  (devops-mode -1)
+  nil)
 
 (provide 'devops)
 
