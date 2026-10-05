@@ -9,6 +9,8 @@
 (require 'devops-lob)
 (require 'devops-drift)
 
+(devops-mode 1)
+
 ;;; Helpers
 
 (defmacro devops-test--with-org (text &rest body)
@@ -31,6 +33,68 @@ The directory is removed afterwards."
      (unwind-protect
          (progn ,@body)
        (delete-directory ,dir-var t))))
+
+;;; Mode and advice
+
+(ert-deftest devops-mode-advice-test ()
+  "The mode adds the execution advice on, and removes it off."
+  (unwind-protect
+      (progn
+        (devops-mode -1)
+        (should-not (advice-member-p #'devops--inject-header-args-from-tags
+                                     'org-babel-execute-src-block))
+        (should-not (advice-member-p #'devops--resolve-ref-sync
+                                     'org-babel-ref-resolve))
+        (devops-mode 1)
+        (should (advice-member-p #'devops--inject-header-args-from-tags
+                                 'org-babel-execute-src-block))
+        (should (advice-member-p #'devops--resolve-ref-sync
+                                 'org-babel-ref-resolve)))
+    (devops-mode 1)))
+
+(ert-deftest devops-mode-off-no-target-test ()
+  "With the mode off, a block under a target's tag runs where org says."
+  (unwind-protect
+      (devops-test--with-local-target target
+        (devops-mode -1)
+        (devops-test--with-org
+            (format (concat "#+TARGET: %s (local)\n\n"
+                            "* Run\t\t:local:\n\n"
+                            "#+begin_src sh\npwd\n#+end_src\n")
+                    target)
+          (goto-char (point-min))
+          (re-search-forward "begin_src")
+          (let* ((org-confirm-babel-evaluate nil)
+                 (result (org-babel-execute-src-block)))
+            (should (equal (file-name-as-directory (file-truename (org-trim result)))
+                           (file-name-as-directory
+                            (file-truename default-directory)))))))
+    (devops-mode 1)))
+
+(ert-deftest devops--tangle-subtree-advice-scoped-test ()
+  "The tangle plan advice is in place only while devops tangles."
+  (let (during)
+    (devops-test--with-org
+        "* H\n#+begin_src sh :tangle a.sh\necho\n#+end_src\n"
+      (devops--tangle-subtree
+       (current-buffer) (point-min)
+       (lambda (_path _params _file)
+         (setq during (advice-member-p #'devops--redirect-tangle-plan
+                                       'org-babel-tangle-collect-blocks))
+         nil)))
+    (should during)
+    (should-not (advice-member-p #'devops--redirect-tangle-plan
+                                 'org-babel-tangle-collect-blocks))))
+
+(ert-deftest devops-unload-function-test ()
+  "Unloading turns the mode off and lets the standard unload proceed."
+  (unwind-protect
+      (progn
+        (should-not (devops-unload-function))
+        (should-not devops-mode)
+        (should-not (advice-member-p #'devops--inject-header-args-from-tags
+                                     'org-babel-execute-src-block)))
+    (devops-mode 1)))
 
 ;;; Keyword parsing
 

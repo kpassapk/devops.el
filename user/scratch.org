@@ -1,0 +1,123 @@
+#+TARGET: .. (project)
+#+TARGET: ~/src/github.com/riscy/melpazoid (melpazoid)
+
+* Scratch                                                           :project:
+
+#+begin_src sh
+  mkdir -p .github/workflows
+  curl -o .github/workflows/melpazoid.yml \
+    https://raw.githubusercontent.com/riscy/melpazoid/master/melpazoid.yml
+#+end_src
+
+#+RESULTS:
+: % Total    % Received % Xferd  Average Speed   Time    Time     Time  Current
+:                                  Dload  Upload   Total   Spent    Left  Speed
+: 100  1042  100  1042    0     0   4640      0 --:--:-- --:--:-- --:--:--  4651
+
+
+* Melpazoid                                                       :melpazoid:
+
+melpa feedback from https://github.com/melpa/melpa/pull/10258 on commit =98c1766=
+
+#+begin_example
+━ devops.el with melpazoid:
+
+- devops.el:812:1: It's safer to sharp-quote the names of existing functions; use `#'`
+- devops.el:251:7: Avoid `ignore-errors` in production code; handle the root cause whenever possible
+- devops.el:298:14: Avoid `ignore-errors` in production code; handle the root cause whenever possible
+- devops.el:422:1: Prefer a minor mode to top-level advice. If you can't, ensure you support `(unload-feature)`
+- devops.el:435:1: Prefer a minor mode to top-level advice. If you can't, ensure you support `(unload-feature)`
+- devops.el:584:1: Prefer a minor mode to top-level advice. If you can't, ensure you support `(unload-feature)`
+#+end_example
+
+#+begin_src sh
+  open -a Docker
+  until docker info >/dev/null 2>&1; do sleep 2; done
+  docker ps
+#+end_src
+
+#+RESULTS:
+: CONTAINER ID   IMAGE     COMMAND   CREATED   STATUS    PORTS     NAMES
+
+#+begin_src sh
+  RECIPE='(devops :fetcher github :repo "kpassapk/devops.el" :branch "melpazoid")' \
+  RUNNER='uv run' make 2>&1  
+#+end_src
+
+#+RESULTS:
+#+begin_example
+uv run mypy melpazoid
+Success: no issues found in 1 source file
+uv run python3 melpazoid/melpazoid.py
+<!-- Cloning https://github.com/kpassapk/devops.el @melpazoid -->
+<!-- Building container for devops... 🐳 -->
+sha256:64ff7d1990a15478ce77f1ab30c853ee6e05280687a3c495733f13faead9977f
+
+<!-- Running tests... -->
+sha256:ad9e8bccb1c4077d2b756280064f6fca5671528b85c2cd6b8858e85d7418482e
+
+━ `devops.el` with [melpazoid](https://github.com/riscy/melpazoid):
+```
+- devops.el:812:1: It's safer to sharp-quote the names of existing functions; use `#'`
+- devops.el:251:7: Avoid `ignore-errors` in production code; handle the root cause whenever possible
+- devops.el:298:14: Avoid `ignore-errors` in production code; handle the root cause whenever possible
+- devops.el:422:1: Prefer a minor mode to top-level advice. If you can't, ensure you support `(unload-feature)`
+- devops.el:435:1: Prefer a minor mode to top-level advice. If you can't, ensure you support `(unload-feature)`
+- devops.el:584:1: Prefer a minor mode to top-level advice. If you can't, ensure you support `(unload-feature)`
+```
+
+— Package and license:
+- Avoid `:branch` in recipes except in unusual cases
+- (Repository)                             GNU General Public License v3.0
+- devops.el                                GPL*, 913 loc
+- devops-lob.el                            GPL*, 132 loc
+- devops-drift.el                          GPL*, 520 loc
+- Created: 2026/Mar/11 08:40 PM (207 days ago)
+- Updated: 2026/Oct/02 11:07 AM (3 days ago)
+- Watched: 29
+#+end_example
+
+
+#+begin_src sh
+  RECIPE='(devops :fetcher github :repo "kpassapk/devops.el" :branch "melpazoid")' \
+  RUNNER='uv run' make 2>&1  
+#+end_src
+
+#+RESULTS:
+#+begin_example
+uv run mypy melpazoid
+Success: no issues found in 1 source file
+uv run python3 melpazoid/melpazoid.py
+<!-- Cloning https://github.com/kpassapk/devops.el @melpazoid -->
+<!-- Building container for devops... 🐳 -->
+sha256:5cd4e72c088547ddcf15cb6a6d68806692c45fb582de89d04955d9e232400380
+
+<!-- Running tests... -->
+sha256:4ac59f73f21da6784d14c77f1366104f0fcd7ec1cfb98b5b66a714062836b1e0
+
+━ `devops.el` with checkdoc using Emacs 31.1 (fix *within reason*):
+```
+devops.el:235: Argument `info' should appear (as INFO) in the doc string
+devops.el:239: Argument `params' should appear (as PARAMS) in the doc string
+devops.el:244: Argument `params' should appear (as PARAMS) in the doc string
+devops.el:254: Argument `lang' should appear (as LANG) in the doc string
+devops.el:265: First sentence should end with punctuation
+devops.el:265: Argument `params' should appear (as PARAMS) in the doc string
+devops.el:280: Argument `lang' should appear (as LANG) in the doc string
+devops.el:291: Argument `params' should appear (as PARAMS) in the doc string
+devops.el:306: Argument `args' should appear (as ARGS) in the doc string
+devops.el:340: First sentence should end with punctuation
+devops.el:392: Documentation strings should not start or end with whitespace
+devops.el:500: Documentation strings should not start or end with whitespace
+```
+
+— Package and license:
+- Avoid `:branch` in recipes except in unusual cases
+- (Repository)                             GNU General Public License v3.0
+- devops.el                                GPL*, 765 loc
+- devops-lob.el                            GPL*, 132 loc
+- devops-drift.el                          GPL*, 520 loc
+- Created: 2026/Mar/11 08:40 PM (207 days ago)
+- Updated: 2026/Oct/02 11:07 AM (3 days ago)
+- Watched: 29
+#+end_example

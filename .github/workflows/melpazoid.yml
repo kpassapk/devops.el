@@ -1,0 +1,42 @@
+# melpazoid <https://github.com/riscy/melpazoid> build checks.
+
+# If your package is on GitHub, enable melpazoid's checks by copying this file
+# to .github/workflows/melpazoid.yml and modifying RECIPE and EXIST_OK below.
+
+name: melpazoid
+# The run takes a while, so it is opt-in: only on pull requests labeled
+# `melpazoid', when the label is added and on each push after that.
+on:
+  pull_request:
+    types: [opened, reopened, synchronize, labeled]
+
+jobs:
+  build:
+    if: >-
+      contains(github.event.pull_request.labels.*.name, 'melpazoid') &&
+      (github.event.action != 'labeled' || github.event.label.name == 'melpazoid')
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v6
+    - name: Set up Python
+      uses: actions/setup-python@v6
+      with: { python-version: '3.10' }
+    - name: Install
+      run: |
+        sudo apt-get install emacs && emacs --version
+        git clone https://github.com/riscy/melpazoid.git ~/melpazoid
+        # melpazoid's Makefile type-checks itself with mypy before running,
+        # and upstream's template doesn't install it.
+        pip install mypy
+    - name: Run
+      env:
+        # No LOCAL_REPO: with it, melpazoid skips the containerized
+        # byte-compile, package-lint, checkdoc and melpazoid checks.  Clone
+        # the branch under test instead.
+        # RECIPE is your recipe as written for MELPA, plus :branch:
+        RECIPE: (devops :fetcher github :repo "kpassapk/devops.el" :branch "${{ github.head_ref }}")
+        # set this to true if warnings should be treated as errors:
+        WARN_IS_ERROR: false
+        # set this to false (or remove it) if the package isn't on MELPA:
+        EXIST_OK: false
+      run: echo $GITHUB_REF && make -C ~/melpazoid

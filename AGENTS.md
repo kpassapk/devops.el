@@ -53,8 +53,8 @@ the duration.
 
 Paths are redirected at the data level. A `:filter-return` advice on
 `org-babel-tangle-collect-blocks` rewrites each block's destination file in
-org's write plan when `devops--tangle-redirect` is bound, and does nothing
-otherwise. `devops--tangle-destination` (for tangling) and
+org's write plan. `devops--tangle-subtree` adds it only while it tangles,
+with `devops--tangle-redirect` bound. `devops--tangle-destination` (for tangling) and
 `devops-drift--destination` (for the drift check) are pure functions that
 decide each destination. Test new path rules there. Org still does the
 writing itself (`:mkdirp`, `:shebang`, `:tangle-mode`). The background is in
@@ -72,6 +72,10 @@ writing itself (`:mkdirp`, `:shebang`, `:tangle-mode`). The background is in
   goes wrong without a step. Match it. checkdoc must stay clean (quote
   symbols as `` `sym' ``, first line a complete sentence). The package is
   headed for MELPA.
+- **No top-level advice.** Execution advice is added by the global
+  `devops-mode`. Advice that only matters inside a devops command is added
+  and removed around that command. `devops-unload-function` turns the mode
+  off. MELPA's melpazoid flags any `(advice-add` at column 0.
 - **Advice changes as little as it can.** An advice on an org function
   should change only what devops needs. When that only matters inside a
   devops command, make it a no-op unless a dynamic variable is bound, as
