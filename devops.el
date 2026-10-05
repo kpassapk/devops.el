@@ -82,14 +82,14 @@
 (defcustom devops-enable-session-async nil
   "When non-nil, run blocks under a target-tagged heading in an async session.
 A src block then gets `:session' and `:async' injected alongside its
-`:dir'. Blocks will print a UUID on execution; this UUID gets replaced
+`:dir'.  Blocks will print a UUID on execution; this UUID gets replaced
 by the result once the command finishes.
 
 If a command never finishes, or gets stuck asking for input,
 use `devops-goto-session' / `devops-restart-session' to recover.
 
 This is off by default, since it changes behavior for blocks that
-are not idempotent. It is also turned off for `:results value'"
+are not idempotent.  It is also turned off for `:results value'."
   :type 'boolean
   :group 'devops)
 
@@ -232,16 +232,20 @@ point is on the block."
            (org-babel-get-src-block-info 'no-eval))))
 
 (defun devops--block-params (info)
-  "Return the header arguments of the src block being executed."
+  "Return the header arguments of the src block being executed.
+INFO is as in `devops--block-info'."
   (nth 2 (devops--block-info info)))
 
 (defun devops--header-cell (key params block-params)
-  "Return the (KEY . VALUE) header argument in effect, or nil."
+  "Return the (KEY . VALUE) header argument in effect, or nil.
+PARAMS, the caller's overrides, win over BLOCK-PARAMS, the block's own."
   (or (assq key params)
       (assq key block-params)))
 
 (defun devops--target-opted-out-p (params block-params)
-  "Return non-nil if a :target header opts the block out of its heading's target."
+  "Return non-nil if a :target header opts the block out of its heading's target.
+PARAMS and BLOCK-PARAMS are as in `devops--header-cell'.  Signal an error
+for any value other than those in `devops--target-none-values'."
   (when-let* ((cell (devops--header-cell :target params block-params)))
     (or (member (cdr cell) devops--target-none-values)
         (user-error "Unknown :target value %S (expected nil)" (cdr cell)))))
@@ -251,7 +255,8 @@ point is on the block."
   (funcall devops-session-name-function tag target))
 
 (defun devops--user-header-args (lang)
-  "Return the header arguments written on the src block at point."
+  "Return the header arguments written on the src block at point.
+Org's defaults, global and for language LANG, are left out."
   (let* ((sym (and lang (intern-soft
                          (concat "org-babel-default-header-args:" lang))))
          (lang-default (and sym (boundp sym) sym)))
@@ -262,7 +267,9 @@ point is on the block."
            (nth 2 (org-babel-get-src-block-info 'no-eval))))))
 
 (defun devops--session-declared-p (params block-params lang)
-  "Non-nil when the block, not org, decided its `:session'"
+  "Non-nil when the block, not org, decided its `:session'.
+PARAMS are the merged header arguments, BLOCK-PARAMS the block's own and
+LANG its language."
   (let ((cell (devops--header-cell :session params block-params)))
     (and cell
          (or (not (equal (cdr cell) "none"))
@@ -277,7 +284,9 @@ point is on the block."
         (split-string results))))
 
 (defun devops--shell-value-p (lang params block-params)
-  "Non-nil when a shell block's result is its exit status."
+  "Non-nil when a shell block's result is its exit status.
+LANG is the block's language; PARAMS and BLOCK-PARAMS are as in
+`devops--header-cell'."
   (when (member lang '("sh" "bash" "shell"))
     (let ((result-params
            (or (devops--result-params params)
@@ -288,7 +297,9 @@ point is on the block."
                      org-babel-shell-results-defaults-to-output)))))))
 
 (defun devops--async-session-cells (params block-params lang tag target)
-  "Return the :session and :async header cells to inject, or nil."
+  "Return the :session and :async header cells to inject, or nil.
+PARAMS, BLOCK-PARAMS and LANG are as in `devops--session-declared-p';
+TAG and TARGET name the heading's target."
   (when (and devops-enable-session-async
              (not devops--inhibit-async)
              (member lang devops-async-session-languages)
@@ -303,7 +314,9 @@ point is on the block."
            (list (cons :async "yes"))))))))
 
 (defun devops--inject-header-args-from-tags (args)
-  "Advise `org-babel-execute-src-block' to inject :dir from #+TARGET tags."
+  "Advise `org-babel-execute-src-block' to inject :dir from #+TARGET tags.
+ARGS is its whole argument list, of which only PARAMS, the third, is
+rewritten."
   (let* ((info (nth 1 args))
          (params (nth 2 args))
          (block-info (devops--block-info info))
@@ -337,7 +350,7 @@ point is on the block."
 
 ;;;###autoload
 (define-minor-mode devops-mode
-  "Make org-babel blocks TARGET-aware"
+  "Make org-babel blocks run on their heading's #+TARGET."
   :global t
   :group 'devops
   (if devops-mode
@@ -389,8 +402,7 @@ Signal a `user-error' if no tag on the heading names a target."
 
 (defun devops--join-target (target path)
   "Join TARGET onto a :tangle PATH, reading PATH as its machine would.
-TARGET is a #+TARGET value: a TRAMP prefix, a directory, or both.
-"
+TARGET is a #+TARGET value: a TRAMP prefix, a directory, or both."
   (let* ((split (devops--split-target target))
          (prefix (car split))
          (root (cdr split))
@@ -497,8 +509,7 @@ target is off for tangling exactly as it is for execution."
 
 (defun devops--tangle-heading (source-buf heading-pos target)
   "Tangle subtree at HEADING-POS from SOURCE-BUF to TARGET.
-Return the number of files tangled, or nil.
-"
+Return the number of files tangled, or nil."
   (let* ((target (if (tramp-tramp-file-p target)
                      target
                    (expand-file-name
@@ -603,7 +614,7 @@ matches."
 (defun devops-tangle-custom-id (source-buf custom-id)
   "Tangle the subtree whose CUSTOM_ID property is CUSTOM-ID, in SOURCE-BUF.
 Locate it with `org-find-property', then tangle it exactly as
-`devops-tangle' would with point on that heading. Return a list of (TAG
+`devops-tangle' would with point on that heading.  Return a list of (TAG
 TARGET N) results.  SOURCE-BUF must be an `org-mode' buffer.
 
 Surrounding whitespace in CUSTOM-ID is ignored, so a selector taken straight
