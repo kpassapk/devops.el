@@ -369,3 +369,20 @@ Setup:
 | `devops-lob-unload-project-tools` | Remove current project's tools from LOB           |
 | `devops-lob-reload-project-tools` | Unload then reload (pick up edits to `tools.org`) |
 | `devops-lob-unload-all`           | Remove all devops-tracked LOB entries             |
+
+## Agent tools
+
+`devops-agentic.el` is for a coding agent, or a script, that drives
+devops.el through `emacsclient --eval`.
+
+- `(devops-block-output FILE LINE &optional TAG)`: what the block at
+  LINE printed, with its status (`:done`, `:running`, `:not-found`,
+  `:no-session`). The output comes from the async session, stderr
+  included, or from `#+RESULTS:` when the session doesn't have the run.
+- `(devops-sessions)`: the live async sessions, each `:idle`, `:running`
+  or `:waiting`.
+
+```sh
+emacsclient --eval '(progn (require (quote devops-agentic))
+  (json-encode (devops-block-output "/path/to/infra.org" 42)))'
+```
