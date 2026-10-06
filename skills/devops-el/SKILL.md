@@ -200,9 +200,9 @@ it with `M-x devops-goto-session` on the block's heading.
 
 With `devops-mode` on and `devops-execution-log` set to a file (usually
 `~/.cache/devops/executions.jsonl`), Emacs appends a JSON line to that
-file when the user runs a block, and once more when an async block's
-result arrives. Watch that file instead of
-waiting for the user to say "done".
+file when the user runs a block, once more when an async block's result
+arrives, and when the user runs `devops-tangle` or `devops-drift`. Watch
+that file instead of waiting for the user to say "done".
 
 Check that the mode is on, and where it logs:
 
@@ -216,21 +216,39 @@ If either is nil, ask the user to turn on `devops-mode` and set
 Don't turn it on yourself. Until it is on, wait for the user to say
 "done", then call `devops-scripting-block-output` on the blocks you wrote.
 
-Each line is the block's `devops-scripting-block-output` answer (above), plus:
+A line says what happened and where. It holds no output, `#+RESULTS:`
+or diff; read those yourself. Every line has:
 
 | Key | Meaning |
 |---|---|
-| `event` | `execute` when the block ran, `result` when an async result arrived |
+| `event` | `execute`, `result`, `tangle` or `drift` |
 | `time` | when the line was written |
 | `file` | the org file, or null for a buffer with no file |
 | `buffer` | the org buffer's name |
+
+A block run (`execute`: the block ran; `result`: an async result arrived) adds:
+
+| Key | Meaning |
+|---|---|
 | `line` | the block's `#+begin_src` line |
-| `error` | why `devops-scripting-block-output` failed (no target, or two), with `result` from `#+RESULTS:` |
+| `session`, `status`, `id` | as `devops-scripting-block-output` answers them |
+| `error` | why `devops-scripting-block-output` failed (no target, or two) |
+
+A `tangle` or `drift` adds:
+
+| Key | Meaning |
+|---|---|
+| `all` | true when run with a prefix argument, on every target-tagged heading |
+| `heading`, `line` | the heading it ran on, unless `all` |
+| `targets` | `tangle`: one `{tag, target, files}` per target, `files` a count |
+| `files` | `drift`: one `{status, tag, path, remote, detail}` per tangled file |
+| `error` | why the command failed; then there are no `targets` or `files` |
 
 An async block logs `execute` with `status` `running`, then `result` with
 `status` `done`. A synchronous block logs only `execute`. Runs that
 devops.el makes on its own (references, dynamic targets, tangling) are
-not logged.
+not logged, and neither are tangles and drift checks a script asks for
+(`devops-tangle-headline`, `devops-drift-all`, and so on).
 
 The log is shared by every Emacs buffer, so filter on the files you
 work on. Start a background monitor (in Claude Code, the Monitor tool)
@@ -240,13 +258,14 @@ that prints one short line per run:
 tail -n0 -F ~/.cache/devops/executions.jsonl \
   | jq --unbuffered -rc --arg dir "$PWD/" \
       'select((.file // "") | startswith($dir))
-       | "\(.event) \(.status // "error") \(.file):\(.line)"'
+       | "\(.event) \(if .error then "error" else .status // "" end) \(.file):\(.line // "all")"'
 ```
 
-On each line, read the full entry or call
-`devops-scripting-block-output` for that file and line, check the
-output, tell the user what happened, and write the next blocks. Don't
-print `output` into the monitor: it can be long and can hold secrets.
+On a block line, call `devops-scripting-block-output` for that file and
+line, check the output, tell the user what happened, and write the next
+blocks. On a `tangle` line, read `targets` or `error`. On a `drift`
+line, read `files`; for the diff of a drifting file, ask the user before
+you run `devops-drift-headline` (see "Drift").
 
 ## Drift
 

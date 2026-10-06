@@ -421,18 +421,21 @@ are skipped.  Takes effect while `devops-mode' is on."
   :group 'devops)
 
 (defcustom devops-execution-log nil
-  "File to append a JSON line to per src block run, or nil for none.
-An agent can follow the file with `tail -F' and learn that the user ran
-a block without being told.  A line is written when a block runs, and
-for an async block again when its result arrives.  Each is the block's
-`devops-scripting-block-output' with `event' (\"execute\" or
-\"result\"), `time', `file', `buffer' and `line'.  Takes effect while
-`devops-mode' is on."
+  "File to append a JSON line to per user action, or nil for none.
+An agent can follow the file with `tail -F' and learn what the user did
+without being told.  A line is written when a block runs, for an async
+block again when its result arrives, and when `devops-tangle' or
+`devops-drift' runs.  Each has `event' (\"execute\", \"result\",
+\"tangle\" or \"drift\"), `time', `file' and `buffer'; see
+devops-log.el for the rest.  No line holds output: the agent reads it
+with `devops-scripting-block-output'.  Takes effect while `devops-mode'
+is on."
   :type '(choice (const :tag "Off" nil) file)
   :group 'devops)
 
 (autoload 'devops--lob-maybe-load-on-find-file "devops-lob")
-(autoload 'devops-log-write "devops-log")
+(autoload 'devops-log-block "devops-log")
+(autoload 'devops-log-command "devops-log")
 
 (defun devops--maybe-load-lob ()
   "Load the project's tools.org, for `find-file-hook'.
@@ -446,7 +449,25 @@ Scripted evaluation -- a reference, a dynamic target, tangling -- runs
 blocks under `devops-with-sync', and those runs are not the user's, so
 they are not logged."
   (when (and devops-execution-log (not devops--inhibit-async))
-    (devops-log-write event pos)))
+    (devops-log-block event pos)))
+
+(defvar devops-mode)
+
+(defun devops--logged (event all fn fields)
+  "Call FN, and log EVENT with FIELDS of its value, or with its error.
+For a command the user runs, such as `devops-tangle'.  ALL is the
+command's prefix argument, as `devops-log-command' takes it.  FIELDS is
+a function of FN's value that returns an alist.  Return FN's value."
+  (if (not (and devops-mode devops-execution-log))
+      (funcall fn)
+    (let ((value (condition-case err
+                     (save-excursion (funcall fn))
+                   (error
+                    (devops-log-command
+                     event all `((:error . ,(error-message-string err))))
+                    (signal (car err) (cdr err))))))
+      (devops-log-command event all (funcall fields value))
+      value)))
 
 (defun devops--log-execution ()
   "Log the src block just executed, for `org-babel-after-execute-hook'.
@@ -742,8 +763,19 @@ target tags."
   (interactive "P")
   (message "%s"
            (devops--tangle-report
-            (devops--tangle-spec-execute
-             (current-buffer) (devops--tangle-spec arg)))))
+            (devops--logged
+             "tangle" arg
+             (lambda ()
+               (devops--tangle-spec-execute
+                (current-buffer) (devops--tangle-spec arg)))
+             (lambda (results)
+               `((:targets
+                  . ,(vconcat
+                      (mapcar (lambda (r)
+                                `((:tag . ,(nth 0 r))
+                                  (:target . ,(nth 1 r))
+                                  (:files . ,(nth 2 r))))
+                              results)))))))))
 
 (defun devops-tangle-headline (source-buf headline)
   "Tangle the subtree titled HEADLINE in SOURCE-BUF, noninteractively.

@@ -2209,9 +2209,9 @@ exist yet.  The directory is removed after."
             (split-string (buffer-string) "\n" t))))
 
 (ert-deftest devops-execution-log-sync-test ()
-  "A synchronous run is logged once, with its result and an error.
+  "A synchronous run is logged once, with an error and no result.
 The block's heading has no target, so `devops-scripting-block-output'
-fails, and the entry holds why along with #+RESULTS."
+fails, and the entry holds why."
   (devops-test--with-execution-log log
     (devops-test--with-org "* Run\n\n#+begin_src emacs-lisp\n(+ 1 2)\n#+end_src\n"
       (goto-char (point-min))
@@ -2222,13 +2222,13 @@ fails, and the entry holds why along with #+RESULTS."
         (should (= 1 (length entries)))
         (should (equal (alist-get 'event (car entries)) "execute"))
         (should (equal (alist-get 'line (car entries)) 3))
-        (should (equal (alist-get 'result (car entries)) "3"))
+        (should-not (assq 'result (car entries)))
         (should (alist-get 'error (car entries)))))))
 
 (ert-deftest devops-execution-log-off-test ()
   "With `devops-execution-log' nil, a run writes no log."
   (let ((devops-execution-log nil))
-    (cl-letf (((symbol-function 'devops-log-write)
+    (cl-letf (((symbol-function 'devops-log-append)
                (lambda (&rest _) (error "Logged with the log off"))))
       (devops-test--with-org "#+begin_src emacs-lisp\n(+ 1 2)\n#+end_src\n"
         (goto-char (point-min))
@@ -2272,10 +2272,83 @@ fails, and the entry holds why along with #+RESULTS."
                     (should (equal (alist-get 'id (car entries)) uuid))
                     (should (equal (alist-get 'line (cadr entries)) 5))
                     (should (equal (alist-get 'status (cadr entries)) "done"))
-                    (should (equal (alist-get 'output (cadr entries)) "hi"))))))
+                    (should-not (assq 'output (cadr entries)))))))
           (when-let* ((buf (get-buffer session)))
             (let ((kill-buffer-query-functions nil))
               (kill-buffer buf))))))))
+
+(ert-deftest devops-execution-log-tangle-test ()
+  "Interactive `devops-tangle' logs the heading and what it tangled.
+The blocks it runs for noweb are not logged."
+  (devops-test--with-local-target target
+    (devops-test--with-execution-log log
+      (devops-test--with-org
+          (format (concat "#+TARGET: %s (local)\n\n"
+                          "* Deploy\t\t:local:\n\n"
+                          "#+name: greeting\n"
+                          "#+begin_src emacs-lisp\n\"hi\"\n#+end_src\n\n"
+                          "#+begin_src txt :tangle out.txt :noweb yes\n"
+                          "<<greeting()>>\n#+end_src\n")
+                  target)
+        (org-back-to-heading)
+        (let ((org-confirm-babel-evaluate nil))
+          (devops-tangle))
+        (let ((entries (devops-test--log-entries log)))
+          (should (= 1 (length entries)))
+          (let ((entry (car entries)))
+            (should (equal (alist-get 'event entry) "tangle"))
+            (should (eq (alist-get 'all entry) :false))
+            (should (equal (alist-get 'heading entry) "Deploy"))
+            (should (equal (alist-get 'line entry) 3))
+            (should (equal (alist-get 'targets entry)
+                           `[((tag . "local") (target . ,target)
+                              (files . 1))]))))))))
+
+(ert-deftest devops-execution-log-tangle-error-test ()
+  "A tangle that fails is logged with why, and still signals."
+  (devops-test--with-execution-log log
+    (devops-test--with-org "* Deploy\n"
+      (org-back-to-heading)
+      (should-error (devops-tangle) :type 'user-error)
+      (let ((entry (car (devops-test--log-entries log))))
+        (should (equal (alist-get 'event entry) "tangle"))
+        (should (string-match-p "No #\\+TARGET" (alist-get 'error entry)))))))
+
+(ert-deftest devops-execution-log-tangle-scripted-test ()
+  "A tangle a script asks for, by headline, is not logged."
+  (devops-test--with-local-target target
+    (devops-test--with-execution-log log
+      (devops-test--with-org
+          (format (concat "#+TARGET: %s (local)\n\n"
+                          "* Deploy\t\t:local:\n\n"
+                          "#+begin_src txt :tangle out.txt\nhi\n#+end_src\n")
+                  target)
+        (devops-tangle-headline (current-buffer) "Deploy")
+        (should-not (file-exists-p log))))))
+
+(ert-deftest devops-execution-log-drift-test ()
+  "Interactive `devops-drift' logs each file's status, without a diff."
+  (devops-test--with-local-target target
+    (devops-test--with-execution-log log
+      (devops-test--with-org
+          (format (concat "#+TARGET: %s (local)\n\n"
+                          "* Deploy\t\t:local:\n\n"
+                          "#+begin_src txt :tangle foo.txt\nhello\n#+end_src\n")
+                  target)
+        (org-back-to-heading)
+        (unwind-protect
+            (devops-drift t)
+          (when-let* ((report (get-buffer "*Drift Report*")))
+            (kill-buffer report)))
+        (let ((entry (car (devops-test--log-entries log))))
+          (should (equal (alist-get 'event entry) "drift"))
+          (should (eq (alist-get 'all entry) t))
+          (should-not (assq 'heading entry))
+          (should (equal (alist-get 'files entry)
+                         `[((status . "missing") (tag . "local")
+                            (path . "foo.txt")
+                            (remote . ,(concat target "foo.txt"))
+                            (detail . :null))])))))))
 
 ;;; devops-lob (README: per-project tools.org)
 

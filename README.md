@@ -34,7 +34,7 @@ Enable optional features:
   :custom
   (devops-enable-session-async t)    ; async sessions (recommended), see below
   (devops-lob-auto-load t)           ; load a project's tools.org
-  (devops-execution-log              ; log block runs
+  (devops-execution-log              ; log runs, tangles, drift checks
    "~/.cache/devops/executions.jsonl")
   :config (devops-mode 1))
 ```
