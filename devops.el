@@ -406,9 +406,81 @@ rewritten."
     (apply fn args)))
 
 
+;;; Optional features
+;;
+;; `devops-mode' installs the hooks for these always; each checks its
+;; variable when it runs, so setting one takes effect with the mode
+;; already on, and the file behind it loads only once it is used.
+
+(defcustom devops-lob-auto-load nil
+  "When non-nil, opening a file in a project loads its tools.org.
+The named src blocks of tools.org at the project root go into the
+Library of Babel; see `devops-lob-load-project-tools'.  Remote files
+are skipped.  Takes effect while `devops-mode' is on."
+  :type 'boolean
+  :group 'devops)
+
+(defcustom devops-execution-log nil
+  "File to append a JSON line to per src block run, or nil for none.
+An agent can follow the file with `tail -F' and learn that the user ran
+a block without being told.  A line is written when a block runs, and
+for an async block again when its result arrives.  Each is the block's
+`devops-scripting-block-output' with `event' (\"execute\" or
+\"result\"), `time', `file', `buffer' and `line'.  Takes effect while
+`devops-mode' is on."
+  :type '(choice (const :tag "Off" nil) file)
+  :group 'devops)
+
+(autoload 'devops--lob-maybe-load-on-find-file "devops-lob")
+(autoload 'devops-log-write "devops-log")
+
+(defun devops--maybe-load-lob ()
+  "Load the project's tools.org, for `find-file-hook'.
+Does nothing unless `devops-lob-auto-load' is set."
+  (when devops-lob-auto-load
+    (devops--lob-maybe-load-on-find-file)))
+
+(defun devops--log (event pos)
+  "Log EVENT on the src block at POS to `devops-execution-log'.
+Scripted evaluation -- a reference, a dynamic target, tangling -- runs
+blocks under `devops-with-sync', and those runs are not the user's, so
+they are not logged."
+  (when (and devops-execution-log (not devops--inhibit-async))
+    (devops-log-write event pos)))
+
+(defun devops--log-execution ()
+  "Log the src block just executed, for `org-babel-after-execute-hook'.
+An async block has only started: its status is `:running', and its
+result is logged again by `devops--log-async-result'."
+  (when org-babel-current-src-block-location
+    (devops--log "execute" org-babel-current-src-block-location)))
+
+(defvar devops--async-result nil
+  "Non-nil while ob-comint inserts the result of an async run.
+Bound by `devops--during-async-filter', so that
+`devops--log-async-result' logs only that insertion, not every result
+a block inserts.")
+
+(defun devops--during-async-filter (fn &rest args)
+  "Run FN, `org-babel-comint-async-filter', with ARGS, logging results.
+ob-comint runs no hook when an async result arrives; it calls
+`org-babel-insert-result' from this filter, with point on the block."
+  (let ((devops--async-result t))
+    (apply fn args)))
+
+(defun devops--log-async-result (fn &rest args)
+  "Run FN, `org-babel-insert-result', with ARGS; log an async result.
+Point is on the block before FN runs, which may move it."
+  (let ((pos (point)))
+    (prog1 (apply fn args)
+      (when devops--async-result
+        (let ((devops--async-result nil))
+          (devops--log "result" pos))))))
+
 ;;;###autoload
 (define-minor-mode devops-mode
-  "Make org-babel blocks run on their heading's #+TARGET."
+  "Make org-babel blocks run on their heading's #+TARGET.
+Also does what `devops-lob-auto-load' and `devops-execution-log' ask."
   :global t
   :group 'devops
   (if devops-mode
@@ -416,10 +488,21 @@ rewritten."
         (advice-add 'org-babel-execute-src-block :filter-args
                     #'devops--inject-header-args-from-tags)
         (advice-add 'org-babel-ref-resolve :around
-                    #'devops--resolve-ref-sync))
+                    #'devops--resolve-ref-sync)
+        (add-hook 'find-file-hook #'devops--maybe-load-lob)
+        (add-hook 'org-babel-after-execute-hook #'devops--log-execution)
+        (advice-add 'org-babel-comint-async-filter :around
+                    #'devops--during-async-filter)
+        (advice-add 'org-babel-insert-result :around
+                    #'devops--log-async-result))
     (advice-remove 'org-babel-execute-src-block
                    #'devops--inject-header-args-from-tags)
-    (advice-remove 'org-babel-ref-resolve #'devops--resolve-ref-sync)))
+    (advice-remove 'org-babel-ref-resolve #'devops--resolve-ref-sync)
+    (remove-hook 'find-file-hook #'devops--maybe-load-lob)
+    (remove-hook 'org-babel-after-execute-hook #'devops--log-execution)
+    (advice-remove 'org-babel-comint-async-filter
+                   #'devops--during-async-filter)
+    (advice-remove 'org-babel-insert-result #'devops--log-async-result)))
 
 (defun devops--heading-sessions ()
   "Return (NAME . BUFFERS) for the current heading's target.

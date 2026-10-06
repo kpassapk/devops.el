@@ -7,16 +7,17 @@ there (`:dir` is injected) or tangle there (`:tangle` paths are redirected).
 
 ## Layout
 
-| File | What it is |
-|---|---|
-| `devops.el` | Core: `#+TARGET` parsing, `:dir`/`:session` injection, `devops-tangle`, terminal DWIM |
-| `devops-drift.el` | `devops-drift`: tangles to a temp dir and compares with each target |
-| `devops-lob.el` | Loads a project's `tools.org` into the Library of Babel |
-| `devops-scripting.el` | Noninteractive functions for scripts and agents over `emacsclient` |
-| `skills/` | Agent skills  |
-| `devops-test.el` | The whole ERT suite |
-| `decisions/` | Decision records (`NN-topic.org`). Read the relevant one before you change a design it covers. |
-| `examples/` | Org files that show each feature. Keep them in step with behavior. |
+| File                  | Contents                                                                                       |
+|-----------------------|------------------------------------------------------------------------------------------------|
+| `devops.el`           | Core: `#+TARGET` parsing, `:dir`/`:session` injection, `devops-tangle`, terminal DWIM          |
+| `devops-drift.el`     | `devops-drift`: tangles to a temp dir and compares with each target                            |
+| `devops-lob.el`       | Loads a project's `tools.org` into the Library of Babel                                        |
+| `devops-scripting.el` | Noninteractive functions for scripts over `emacsclient`                                        |
+| `devops-log.el`       | Writes `devops-execution-log`: one JSON line per block run                                     |
+| `skills/`             | Agent skills                                                                                   |
+| `devops-test.el`      | The whole ERT suite                                                                            |
+| `decisions/`          | Decision records (`NN-topic.org`). Read the relevant one before you change a design it covers. |
+| `examples/`           | Org files that show each feature. Keep them in step with behavior.                             |
 
 ## Commands
 
@@ -66,12 +67,6 @@ there. Org still does the writing itself (`:mkdirp`, `:shebang`,
   does.
 - **Delete dead code.** When code becomes unused, remove it and its tests.
   Don't shim or deprecate.
-- **Docstrings explain why.** checkdoc must stay clean (quote symbols
-  as `` `sym' ``, first line a complete sentence).
-- **Advice changes as little as it can.** An advice on an org function
-  should change only what devops needs. When that only matters inside a
-  devops command, make it a no-op unless a dynamic variable is bound, as
-  `devops--redirect-tangle-plan` does with `devops--tangle-redirect`.
 - **Scripted evaluation is synchronous.** Anything that reads a block's
   result (tangling, drift, `:var` and noweb references) runs inside
   `devops-with-sync`, because under `:async` the result is a placeholder

@@ -198,20 +198,21 @@ it with `M-x devops-goto-session` on the block's heading.
 
 ## Following runs
 
-With `devops-scripting-log-mode` on, Emacs appends a JSON line to
-`devops-scripting-execution-log` (default
-`~/.cache/devops/executions.jsonl`) when the user runs a block, and once
-more when an async block's result arrives. Watch that file instead of
+With `devops-mode` on and `devops-execution-log` set to a file (usually
+`~/.cache/devops/executions.jsonl`), Emacs appends a JSON line to that
+file when the user runs a block, and once more when an async block's
+result arrives. Watch that file instead of
 waiting for the user to say "done".
 
 Check that the mode is on, and where it logs:
 
 ```
-emacsclient --eval '(progn (require (quote devops-scripting))
-  (list devops-scripting-log-mode devops-scripting-execution-log))'
+emacsclient --eval '(progn (require (quote devops))
+  (list devops-mode devops-execution-log))'
 ```
 
-If it is off, ask the user to turn it on (`M-x devops-scripting-log-mode`).
+If either is nil, ask the user to turn on `devops-mode` and set
+`devops-execution-log` (e.g. `M-x customize-variable`).
 Don't turn it on yourself. Until it is on, wait for the user to say
 "done", then call `devops-scripting-block-output` on the blocks you wrote.
 

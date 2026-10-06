@@ -46,11 +46,19 @@ The directory is removed afterwards."
                                      'org-babel-execute-src-block))
         (should-not (advice-member-p #'devops--resolve-ref-sync
                                      'org-babel-ref-resolve))
+        (should-not (memq #'devops--maybe-load-lob find-file-hook))
+        (should-not (memq #'devops--log-execution org-babel-after-execute-hook))
+        (should-not (advice-member-p #'devops--log-async-result
+                                     'org-babel-insert-result))
         (devops-mode 1)
         (should (advice-member-p #'devops--inject-header-args-from-tags
                                  'org-babel-execute-src-block))
         (should (advice-member-p #'devops--resolve-ref-sync
-                                 'org-babel-ref-resolve)))
+                                 'org-babel-ref-resolve))
+        (should (memq #'devops--maybe-load-lob find-file-hook))
+        (should (memq #'devops--log-execution org-babel-after-execute-hook))
+        (should (advice-member-p #'devops--log-async-result
+                                 'org-babel-insert-result)))
     (devops-mode 1)))
 
 (ert-deftest devops-mode-off-no-target-test ()
@@ -2182,16 +2190,15 @@ The block's body is on line 6."
               (kill-buffer buf))))))))
 
 (defmacro devops-test--with-execution-log (log-var &rest body)
-  "Run BODY with `devops-scripting-log-mode' on, logging to LOG-VAR.
+  "Run BODY with `devops-execution-log' set to LOG-VAR.
 LOG-VAR is bound to a temp file name, under a directory that does not
-exist yet.  The mode is turned off and the directory removed after."
+exist yet.  The directory is removed after."
   (declare (indent 1))
   `(let* ((dir (make-temp-file "devops-log-" t))
           (,log-var (expand-file-name "sub/executions.jsonl" dir))
-          (devops-scripting-execution-log ,log-var))
+          (devops-execution-log ,log-var))
      (unwind-protect
-         (progn (devops-scripting-log-mode 1) ,@body)
-       (devops-scripting-log-mode -1)
+         (progn ,@body)
        (delete-directory dir t))))
 
 (defun devops-test--log-entries (file)
@@ -2201,7 +2208,7 @@ exist yet.  The mode is turned off and the directory removed after."
     (mapcar (lambda (line) (json-parse-string line :object-type 'alist))
             (split-string (buffer-string) "\n" t))))
 
-(ert-deftest devops-scripting-log-mode-sync-test ()
+(ert-deftest devops-execution-log-sync-test ()
   "A synchronous run is logged once, with its result and an error.
 The block's heading has no target, so `devops-scripting-block-output'
 fails, and the entry holds why along with #+RESULTS."
@@ -2218,7 +2225,17 @@ fails, and the entry holds why along with #+RESULTS."
         (should (equal (alist-get 'result (car entries)) "3"))
         (should (alist-get 'error (car entries)))))))
 
-(ert-deftest devops-scripting-log-mode-scripted-test ()
+(ert-deftest devops-execution-log-off-test ()
+  "With `devops-execution-log' nil, a run writes no log."
+  (let ((devops-execution-log nil))
+    (cl-letf (((symbol-function 'devops-log-write)
+               (lambda (&rest _) (error "Logged with the log off"))))
+      (devops-test--with-org "#+begin_src emacs-lisp\n(+ 1 2)\n#+end_src\n"
+        (goto-char (point-min))
+        (let ((org-confirm-babel-evaluate nil))
+          (should (equal (org-babel-execute-src-block) 3)))))))
+
+(ert-deftest devops-execution-log-scripted-test ()
   "A run under `devops-with-sync' is not the user's, and is not logged."
   (devops-test--with-execution-log log
     (devops-test--with-org "#+begin_src emacs-lisp\n(+ 1 2)\n#+end_src\n"
@@ -2227,7 +2244,7 @@ fails, and the entry holds why along with #+RESULTS."
         (devops-with-sync (org-babel-execute-src-block)))
       (should-not (file-exists-p log)))))
 
-(ert-deftest devops-scripting-log-mode-async-test ()
+(ert-deftest devops-execution-log-async-test ()
   "An async run is logged when it starts and again when its result lands."
   (let ((devops-enable-session-async t))
     (devops-test--with-local-target target
@@ -2355,29 +2372,23 @@ isolated so tests never touch real state.  Everything is removed after."
         (should (equal (nth 1 entry) "sh"))
         (should (eq (caar (nth 2 entry)) :var))))))
 
-(ert-deftest devops-lob-auto-mode-hook-test ()
-  "Enabling the mode installs the find-file hook; disabling removes it."
-  (unwind-protect
-      (progn
-        (devops-lob-auto-mode 1)
-        (should (memq #'devops--lob-maybe-load-on-find-file find-file-hook))
-        (devops-lob-auto-mode -1)
-        (should-not (memq #'devops--lob-maybe-load-on-find-file find-file-hook)))
-    (devops-lob-auto-mode -1)))
-
 (ert-deftest devops-lob-auto-load-on-find-file-test ()
-  "With auto mode on, opening a file in a project loads its tools.org."
+  "With `devops-lob-auto-load' set, opening a file in a project loads
+its tools.org; with it nil, nothing loads."
   (devops-test--with-project root devops-test--tools-org
     (let ((file (expand-file-name "notes.txt" root))
           buf)
       (with-temp-file file (insert "hi\n"))
       (unwind-protect
           (progn
-            (devops-lob-auto-mode 1)
-            (setq buf (find-file-noselect file))
-            (should (assq 'deploy org-babel-library-of-babel))
-            (should (= 1 (length devops--lob-project-registry))))
-        (devops-lob-auto-mode -1)
-        (when buf (kill-buffer buf))))))
+            (let ((devops-lob-auto-load nil))
+              (setq buf (find-file-noselect file))
+              (should-not devops--lob-project-registry))
+            (kill-buffer buf)
+            (let ((devops-lob-auto-load t))
+              (setq buf (find-file-noselect file))
+              (should (assq 'deploy org-babel-library-of-babel))
+              (should (= 1 (length devops--lob-project-registry)))))
+        (when (buffer-live-p buf) (kill-buffer buf))))))
 
 (provide 'devops-test)

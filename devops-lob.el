@@ -44,7 +44,7 @@
 (defvar devops--lob-loading nil
   "Non-nil while a tools.org load is in progress.
 Reading tools.org visits it, which fires `find-file-hook' before the
-project is registered; without this guard `devops-lob-auto-mode' would
+project is registered; without this guard `devops-lob-auto-load' would
 re-enter the load and register the project twice.")
 
 (defun devops--lob-do-load (root tools-file)
@@ -105,7 +105,8 @@ re-enter the load and register the project twice.")
   (message "devops: all project LOB entries unloaded"))
 
 (defun devops--lob-maybe-load-on-find-file ()
-  "Auto-load tools.org for current project if not yet loaded.
+  "Load tools.org for the current project if not yet loaded.
+Called from `find-file-hook' when `devops-lob-auto-load' is set.
 Skips TRAMP remote paths."
   (when (and (not devops--lob-loading)
              (not (file-remote-p default-directory)))
@@ -115,16 +116,6 @@ Skips TRAMP remote paths."
       (when (and (file-readable-p file)
                  (not (assoc root devops--lob-project-registry)))
         (devops--lob-do-load root file)))))
-
-;;;###autoload
-(define-minor-mode devops-lob-auto-mode
-  "Automatically load tools.org LOB entries when opening files in a project."
-  :global t
-  :lighter " dLOB"
-  :group 'tools
-  (if devops-lob-auto-mode
-      (add-hook 'find-file-hook #'devops--lob-maybe-load-on-find-file)
-    (remove-hook 'find-file-hook #'devops--lob-maybe-load-on-find-file)))
 
 (provide 'devops-lob)
 

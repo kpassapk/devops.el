@@ -121,3 +121,17 @@ devops.el:500: Documentation strings should not start or end with whitespace
 - Updated: 2026/Oct/02 11:07 AM (3 days ago)
 - Watched: 29
 #+end_example
+
+
+#+begin_src sh :dir ~/Movies
+  ./mov2gif.sh devops-drift.mov
+#+end_src
+
+#+RESULTS:
+: -rw-r--r--@ 1 kyle  staff   1.2M Oct  6 10:15 devops-drift.gif
+
+#+begin_src sh :dir ~/Movies
+  cp devops-drift.gif ~/src/github.com/kpassapk/devops.el/docs/images/
+#+end_src
+
+#+RESULTS:

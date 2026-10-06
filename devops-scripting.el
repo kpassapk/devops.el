@@ -40,10 +40,8 @@
 ;; async sessions and which of them is waiting on a prompt -- sudo, an
 ;; ssh host key -- that only a person should answer.
 ;;
-;; `devops-scripting-log-mode' goes the other way: it tells the agent when
-;; the user runs a block, by appending a JSON line per run to
-;; `devops-scripting-execution-log', and another when an async run's
-;; result arrives.
+;; The execution log goes the other way: with `devops-execution-log'
+;; set, devops-log.el tells the agent when the user runs a block.
 
 ;;; Code:
 
@@ -356,100 +354,6 @@ name them anything."
                   (:id . ,(alist-get :id last)))
                 sessions))))
     (nreverse sessions)))
-
-;;; Execution log
-
-(defcustom devops-scripting-execution-log "~/.cache/devops/executions.jsonl"
-  "File that `devops-scripting-log-mode' appends a line to per block run.
-Each line is a JSON object, so an agent can follow the file with
-`tail -F' and learn that the user ran a block without being told.  The
-directory is created on the first write."
-  :type 'file
-  :group 'devops)
-
-(defvar devops-scripting--async-result nil
-  "Non-nil while ob-comint inserts the result of an async run.
-Bound by `devops-scripting--during-async-filter', so that
-`devops-scripting--log-async-result' logs only that insertion, not every
-result a block inserts.")
-
-(defun devops-scripting--log-entry (event pos)
-  "Return the log entry for EVENT on the src block at POS, an alist.
-The block's `devops-scripting-block-output' answer, with the time, the
-event, and where the block is.  A block that answer cannot be had for --
-a heading with no target, or two -- is logged with the error and its
-#+RESULTS."
-  (let ((line (line-number-at-pos pos)))
-    `((:time . ,(format-time-string "%FT%T%z"))
-      (:event . ,event)
-      (:file . ,(buffer-file-name (buffer-base-buffer)))
-      (:buffer . ,(buffer-name))
-      (:line . ,line)
-      ,@(condition-case err
-            (devops-scripting-block-output (current-buffer) line)
-          (error `((:error . ,(error-message-string err))
-                   (:result . ,(save-excursion
-                                 (goto-char pos)
-                                 (devops-scripting--results-text)))))))))
-
-(defun devops-scripting--log (event pos)
-  "Append the entry for EVENT on the src block at POS to the log.
-Scripted evaluation -- a reference, a dynamic target, tangling -- runs
-blocks under `devops-with-sync', and those runs are not the user's, so
-they are not logged."
-  (when (and devops-scripting-execution-log (not devops--inhibit-async))
-    (let ((file (expand-file-name devops-scripting-execution-log))
-          (entry (concat (json-encode (devops-scripting--log-entry event pos))
-                         "\n")))
-      (make-directory (file-name-directory file) t)
-      (write-region entry nil file t 'silent))))
-
-(defun devops-scripting--log-execution ()
-  "Log the src block just executed, for `org-babel-after-execute-hook'.
-An async block has only started: its status is `:running', and its
-result is logged again by `devops-scripting--log-async-result'."
-  (when org-babel-current-src-block-location
-    (devops-scripting--log "execute" org-babel-current-src-block-location)))
-
-(defun devops-scripting--during-async-filter (fn &rest args)
-  "Run FN, `org-babel-comint-async-filter', with ARGS, logging results.
-ob-comint runs no hook when an async result arrives; it calls
-`org-babel-insert-result' from this filter, with point on the block."
-  (let ((devops-scripting--async-result t))
-    (apply fn args)))
-
-(defun devops-scripting--log-async-result (fn &rest args)
-  "Run FN, `org-babel-insert-result', with ARGS; log an async result.
-Point is on the block before FN runs, which may move it."
-  (let ((pos (point)))
-    (prog1 (apply fn args)
-      (when devops-scripting--async-result
-        (let ((devops-scripting--async-result nil))
-          (devops-scripting--log "result" pos))))))
-
-;;;###autoload
-(define-minor-mode devops-scripting-log-mode
-  "Log each src block run to `devops-scripting-execution-log'.
-A line is written when a block runs, and for an async block again when
-its result arrives.  Each is the block's
-`devops-scripting-block-output' with `event' (\"execute\" or
-\"result\"), `time', `file', `buffer' and `line'."
-  :global t
-  :group 'devops
-  (if devops-scripting-log-mode
-      (progn
-        (add-hook 'org-babel-after-execute-hook
-                  #'devops-scripting--log-execution)
-        (advice-add 'org-babel-comint-async-filter :around
-                    #'devops-scripting--during-async-filter)
-        (advice-add 'org-babel-insert-result :around
-                    #'devops-scripting--log-async-result))
-    (remove-hook 'org-babel-after-execute-hook
-                 #'devops-scripting--log-execution)
-    (advice-remove 'org-babel-comint-async-filter
-                   #'devops-scripting--during-async-filter)
-    (advice-remove 'org-babel-insert-result
-                   #'devops-scripting--log-async-result)))
 
 (provide 'devops-scripting)
 
