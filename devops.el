@@ -259,14 +259,7 @@ for any value other than those in `devops--target-none-values'."
 (defun devops--session-name (target &optional slot)
   "Return the name of session SLOT in the pool for TARGET.
 SLOT counts from 1, the default.  Slot 1 is \"devops:TARGET\" and slot N
-adds \"<N>\", the way Emacs names a second buffer.
-
-The name is the target alone, not its tag: a shell is its machine and
-its directory, so tags and org files that name the same target share a
-pool.  A local TARGET is expanded against `default-directory', so that
-\"..\" in two directories names two pools, and \"~/src\" and its
-expansion one.  A TRAMP target is left as written, since expanding it
-can open a connection."
+adds \"<N>\", the way Emacs names a second buffer."
   (format "devops:%s%s"
           (if (tramp-tramp-file-p target)
               target
