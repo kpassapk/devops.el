@@ -324,18 +324,12 @@ To enable, set `devops-enable-session-async`.
 (setq devops-enable-session-async t)
 ```
 
-A session is one shell, and runs one block at a time. To run blocks in
-parallel, each target gets a pool of `devops-session-pool-size` sessions
-(default 2). A block goes to the first idle one: `devops:example
-/ssh:example.com:`, then `devops:example /ssh:example.com:<2>`. When
-they are all busy, running another block is an error.
+Up to `devops-session-pool-size` (default 2) sessions can run in parallel per target.
 
-The sessions in a pool share nothing, so don't write blocks that rely on
-a `cd` or `export` from an earlier block. A block with its own
-`:session` header runs in that session, outside the pool.
+![pool](./docs/images/devops-async-pool.gif)
 
-`M-x devops-goto-session` pops to a session of the heading's target, and
-`M-x devops-restart-session` kills all of them.
+`M-x devops-goto-session` pops to the session buffer
+`M-x devops-restart-session` kills all sessions for this target
 
 Caveats:
 
