@@ -174,6 +174,12 @@ that names the tags. Pass one as TAG.
 Nothing is run, except that a dynamic target (`#+TARGET: <<name()>>`) runs
 its block to resolve the session name, as the block itself did.
 
+To read one run rather than a block's latest, pass the `session` and `id`
+of its log line to `(devops-scripting-run-output SESSION ID)`. It answers
+`session`, `status`, `id`, `input` (what was sent) and `output` from the
+session alone, so it works
+after the block has moved or run again; it never reads `#+RESULTS:`.
+
 What to do next:
 
 | You see | Do |
@@ -222,7 +228,7 @@ or diff; read those yourself. Every line has:
 | Key | Meaning |
 |---|---|
 | `event` | `execute`, `result`, `tangle` or `drift` |
-| `time` | when the line was written |
+| `time` | when the line was written, to the millisecond |
 | `file` | the org file, or null for a buffer with no file |
 | `buffer` | the org buffer's name |
 
@@ -232,7 +238,7 @@ A block run (`execute`: the block ran; `result`: an async result arrived) adds:
 |---|---|
 | `line` | the block's `#+begin_src` line |
 | `session`, `status`, `id` | as `devops-scripting-block-output` answers them |
-| `error` | why `devops-scripting-block-output` failed (no target, or two) |
+| `error` | why there is no session: the block ran on no target |
 
 A `tangle` or `drift` adds:
 

@@ -42,7 +42,7 @@ The directory is removed afterwards."
   (unwind-protect
       (progn
         (devops-mode -1)
-        (should-not (advice-member-p #'devops--inject-header-args-from-tags
+        (should-not (advice-member-p #'devops--execute-on-target
                                      'org-babel-execute-src-block))
         (should-not (advice-member-p #'devops--resolve-ref-sync
                                      'org-babel-ref-resolve))
@@ -51,7 +51,7 @@ The directory is removed afterwards."
         (should-not (advice-member-p #'devops--log-async-result
                                      'org-babel-insert-result))
         (devops-mode 1)
-        (should (advice-member-p #'devops--inject-header-args-from-tags
+        (should (advice-member-p #'devops--execute-on-target
                                  'org-babel-execute-src-block))
         (should (advice-member-p #'devops--resolve-ref-sync
                                  'org-babel-ref-resolve))
@@ -101,7 +101,7 @@ The directory is removed afterwards."
       (progn
         (should-not (devops-unload-function))
         (should-not devops-mode)
-        (should-not (advice-member-p #'devops--inject-header-args-from-tags
+        (should-not (advice-member-p #'devops--execute-on-target
                                      'org-babel-execute-src-block)))
     (devops-mode 1)))
 
@@ -2142,6 +2142,26 @@ The block's body is on line 6."
       (should (equal (alist-get :session (devops-scripting-block-output (current-buffer) 7 "b"))
                      "devops:b /srv/b/")))))
 
+(ert-deftest devops-scripting-run-output-test ()
+  "A run's output by its ID, whatever has become of its block."
+  (devops-test--with-transcript "devops:local /srv/app/" (devops-test--transcript)
+    (let ((out (devops-scripting-run-output "devops:local /srv/app/"
+                                            devops-test--run-a)))
+      (should (equal (alist-get :session out) "devops:local /srv/app/"))
+      (should (eq (alist-get :status out) :done))
+      (should (equal (alist-get :id out) devops-test--run-a))
+      (should (string-match-p "echo one\nls /nope\\'" (alist-get :input out)))
+      (should (equal (alist-get :output out) "one\nls: /nope: No such file")))
+    (should (eq (alist-get :status (devops-scripting-run-output
+                                    "devops:local /srv/app/" devops-test--run-b))
+                :running))
+    (let ((out (devops-scripting-run-output "devops:local /srv/app/" "nope")))
+      (should (eq (alist-get :status out) :not-found))
+      (should-not (alist-get :output out))))
+  (should (eq (alist-get :status (devops-scripting-run-output
+                                  "devops:gone" devops-test--run-a))
+              :no-session)))
+
 (ert-deftest devops-scripting--pending-prompt-test ()
   "A session ending partway through a line, not on its prompt, is waiting."
   (devops-test--with-transcript "devops-test-session"
@@ -2222,8 +2242,41 @@ fails, and the entry holds why."
         (should (= 1 (length entries)))
         (should (equal (alist-get 'event (car entries)) "execute"))
         (should (equal (alist-get 'line (car entries)) 3))
+        (should (string-match-p
+                 "\\`[0-9-]+T[0-9:]+\\.[0-9]\\{3\\}[-+][0-9]\\{4\\}\\'"
+                 (alist-get 'time (car entries))))
         (should-not (assq 'result (car entries)))
         (should (alist-get 'error (car entries)))))))
+
+(defvar devops-test--target-runs 0
+  "How many times the dynamic target's block in a test has run.")
+
+(ert-deftest devops-execution-log-dynamic-target-test ()
+  "Logging a run under a dynamic target does not run its block again.
+The entry names the session from the target the run resolved."
+  (devops-test--with-local-target target
+    (devops-test--with-execution-log log
+      (devops-test--with-org
+          (format (concat "#+TARGET: <<where()>> (local)\n\n"
+                          "* Locate\n\n"
+                          "#+name: where\n#+begin_src emacs-lisp\n"
+                          "(setq devops-test--target-runs"
+                          " (1+ devops-test--target-runs))\n"
+                          "%S\n#+end_src\n\n"
+                          "* Run\t\t:local:\n\n"
+                          "#+begin_src sh\npwd\n#+end_src\n")
+                  target)
+        (goto-char (point-max))
+        (re-search-backward "begin_src")
+        (let ((org-confirm-babel-evaluate nil)
+              (devops-enable-session-async nil)
+              (devops-test--target-runs 0))
+          (org-babel-execute-src-block)
+          (should (= devops-test--target-runs 1))
+          (let ((entries (devops-test--log-entries log)))
+            (should (= 1 (length entries)))
+            (should (equal (alist-get 'session (car entries))
+                           (devops--session-name "local" target)))))))))
 
 (ert-deftest devops-execution-log-off-test ()
   "With `devops-execution-log' nil, a run writes no log."

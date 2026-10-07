@@ -48,30 +48,37 @@ The log's directory is created on the first write."
 
 (defun devops-log--header (event)
   "Return the fields every entry for EVENT starts with, an alist."
-  `((:time . ,(format-time-string "%FT%T%z"))
+  `((:time . ,(format-time-string "%FT%T.%3N%z"))
     (:event . ,event)
     (:file . ,(buffer-file-name (buffer-base-buffer)))
     (:buffer . ,(buffer-name))))
 
-(defun devops-log--block-entry (event pos)
+(defun devops-log--block-entry (event pos session)
   "Return the log entry for EVENT on the src block at POS, an alist.
-The block's line, and its session, status and id from
-`devops-scripting-block-output'.  A block that answer cannot be had for
--- a heading with no target, or two -- is logged with the error."
+The block's line, and its session, status and id as
+`devops-scripting-block-output' answers them for SESSION, the name of
+the session it ran in.  The target is not resolved again: for a dynamic
+target that would run its block.  A block that ran on no target, SESSION
+nil, is logged with an error."
   (let ((line (line-number-at-pos pos)))
     `(,@(devops-log--header event)
       (:line . ,line)
       ,@(condition-case err
-            (let ((answer (devops-scripting-block-output
-                           (current-buffer) line)))
+            (let ((answer (save-excursion
+                            (devops-scripting--block-output
+                             (devops-scripting--src-block-at line)
+                             (or session
+                                 (user-error "Not run on a #+TARGET"))))))
               (delq nil (mapcar (lambda (key) (assq key answer))
                                 '(:session :status :id))))
           (error `((:error . ,(error-message-string err))))))))
 
 ;;;###autoload
-(defun devops-log-block (event pos)
-  "Log EVENT on the src block at POS."
-  (devops-log-append (devops-log--block-entry event pos)))
+(defun devops-log-block (event pos session)
+  "Log EVENT on the src block at POS, run in SESSION.
+SESSION is the session buffer's name, or nil when the block ran on no
+target."
+  (devops-log-append (devops-log--block-entry event pos session)))
 
 (defun devops-log--heading ()
   "Return the heading at point as (:heading . TITLE) and (:line . N).

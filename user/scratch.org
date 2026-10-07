@@ -135,3 +135,10 @@ devops.el:500: Documentation strings should not start or end with whitespace
 #+end_src
 
 #+RESULTS:
+
+#+begin_src sh
+  sleep 10 && echo hi
+#+end_src
+
+#+RESULTS:
+: hi

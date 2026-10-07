@@ -274,30 +274,65 @@ dynamic target is resolved, and that runs its block; see
   (with-current-buffer (devops-scripting--source-buffer source)
     (save-excursion
       (let* ((el (devops-scripting--src-block-at line))
-             (pair (devops-scripting--target tag))
-             (name (devops--session-name (car pair) (cdr pair)))
-             (result (devops-scripting--results-text))
-             (session (get-buffer name))
-             (run (and session
-                       (devops-scripting--block-run
-                        (devops-scripting--runs session)
-                        result
-                        (org-element-property :value el))))
-             (source (cond (run :session)
-                           ((and result
-                                 (not (devops-scripting--placeholder-p result)))
-                            :results))))
-        `((:session . ,name)
-          (:status . ,(cond ((not session) :no-session)
-                            ((not run) :not-found)
-                            ((alist-get :done run) :done)
-                            (t :running)))
-          (:id . ,(alist-get :id run))
-          (:source . ,source)
-          (:output . ,(pcase source
-                        (:session (alist-get :output run))
-                        (:results result)))
-          (:result . ,result))))))
+             (pair (devops-scripting--target tag)))
+        (devops-scripting--block-output
+         el (devops--session-name (car pair) (cdr pair)))))))
+
+(defun devops-scripting--block-output (el name)
+  "Return what EL, the src block at point, printed in session NAME.
+The answer is `devops-scripting-block-output's."
+  (let* ((result (devops-scripting--results-text))
+         (session (get-buffer name))
+         (run (and session
+                   (devops-scripting--block-run
+                    (devops-scripting--runs session)
+                    result
+                    (org-element-property :value el))))
+         (source (cond (run :session)
+                       ((and result
+                             (not (devops-scripting--placeholder-p result)))
+                        :results))))
+    `((:session . ,name)
+      (:status . ,(cond ((not session) :no-session)
+                        ((not run) :not-found)
+                        ((alist-get :done run) :done)
+                        (t :running)))
+      (:id . ,(alist-get :id run))
+      (:source . ,source)
+      (:output . ,(pcase source
+                    (:session (alist-get :output run))
+                    (:results result)))
+      (:result . ,result))))
+
+;;;###autoload
+(defun devops-scripting-run-output (session id)
+  "Return what the run ID printed in SESSION, a session buffer's name.
+SESSION and ID are as `devops-execution-log' records a run, so a log
+line is answered for that run exactly, after its block has moved,
+changed or run again.
+
+The answer is an alist:
+
+  :session  SESSION
+  :status   `:done', `:running', `:not-found' -- the session holds no
+            run with ID, say after a restart -- or `:no-session'
+  :id       ID
+  :input    what was sent, as the session echoed it, or nil
+  :output   what the run printed, stderr included, or nil
+
+Nothing is run, and no org buffer is read: for #+RESULTS, ask
+`devops-scripting-block-output'."
+  (let* ((buf (get-buffer session))
+         (run (and buf (seq-find (lambda (run) (equal id (alist-get :id run)))
+                                 (devops-scripting--runs buf)))))
+    `((:session . ,session)
+      (:status . ,(cond ((not buf) :no-session)
+                        ((not run) :not-found)
+                        ((alist-get :done run) :done)
+                        (t :running)))
+      (:id . ,id)
+      (:input . ,(and run (string-trim-right (alist-get :input run))))
+      (:output . ,(alist-get :output run)))))
 
 ;;; Sessions
 
