@@ -921,17 +921,161 @@ Return the header arguments the executor was handed, so an injected
     (devops-test--with-session-org ""
       (let ((params (devops-test--executor-params "sh")))
         (should (equal (cdr (assq :dir params)) "/srv/app/"))
-        (should (equal (cdr (assq :session params)) "devops:local /srv/app/"))
+        (should (equal (cdr (assq :session params)) "devops:/srv/app/"))
         (should (equal (cdr (assq :async params)) "yes"))))))
 
-(ert-deftest devops-session-name-function-test ()
-  "`devops-session-name-function' decides the session name."
-  (let ((devops-enable-session-async t)
-        (devops-session-name-function
-         (lambda (tag target) (format "%s@%s" tag target))))
-    (devops-test--with-session-org ""
-      (should (equal (cdr (assq :session (devops-test--executor-params "sh")))
-                     "local@/srv/app/")))))
+(ert-deftest devops-session-name-relative-target-test ()
+  "A session is named by its target's directory, whatever the tag.
+Two org files with the same relative #+TARGET in different directories
+get different sessions, and `~' is expanded; TRAMP targets are left as is."
+  (let ((default-directory "/srv/one/app/"))
+    (should (equal (devops--session-name "..") "devops:/srv/one/"))
+    (should (equal (devops--session-name ".") "devops:/srv/one/app/"))
+    (should (equal (devops--session-name "/srv/one") "devops:/srv/one/"))
+    (should (equal (devops--session-name "~/src")
+                   (concat "devops:" (expand-file-name "~/src/"))))
+    (should (equal (devops--session-name "/ssh:app@host:")
+                   "devops:/ssh:app@host:")))
+  (let ((default-directory "/srv/two/app/"))
+    (should (equal (devops--session-name "..") "devops:/srv/two/"))))
+
+;;; Session pool
+
+(ert-deftest devops-session-two-tags-one-target-test ()
+  "Two tags for the same target send their blocks to the same session."
+  (let ((devops-enable-session-async t))
+    (devops-test--with-org
+        (concat "#+TARGET: /srv/app/ (web)
+#+TARGET: /srv/app (api)
+
+"
+                "* Web\t\t:web:\n\n#+begin_src sh\npwd\n#+end_src\n\n"
+                "* Api\t\t:api:\n\n#+begin_src sh\npwd\n#+end_src\n")
+      (goto-char (point-min))
+      (dolist (_ '(web api))
+        (re-search-forward "begin_src")
+        (should (equal (cdr (assq :session (devops-test--executor-params "sh")))
+                       "devops:/srv/app/"))))))
+
+(ert-deftest devops-session-name-slot-test ()
+  "Slot 1 of a pool has the bare name; slot N adds \"<N>\"."
+  (should (equal (devops--session-name "/srv/app/" 1)
+                 "devops:/srv/app/"))
+  (should (equal (devops--session-name "/srv/app/" 2)
+                 "devops:/srv/app/<2>")))
+
+(defconst devops-test--run-id "11111111-2222-3333-4444-555555555555"
+  "The async run ID in the fake session transcripts below.")
+
+(defun devops-test--sent (id)
+  "Return what ob-shell sends a session for the run ID of `echo hi'."
+  (format (concat "echo 'ob_comint_async_shell_start_%s'\n"
+                  "echo hi\n"
+                  "echo 'ob_comint_async_shell_end_%s'\n")
+          id id))
+
+(defun devops-test--printed (id)
+  "Return what a session prints for the run ID of `echo hi'."
+  (format (concat "ob_comint_async_shell_start_%s\n"
+                  "hi\n"
+                  "ob_comint_async_shell_end_%s\n$ ")
+          id id))
+
+(defmacro devops-test--with-sessions (sessions &rest body)
+  "Run BODY with fake session buffers, removed afterwards.
+SESSIONS is a list of (NAME TEXT): a buffer NAME holding TEXT, with a
+live process the way a session has one.  TEXT nil makes the buffer
+without a process."
+  (declare (indent 1))
+  `(let ((bufs nil))
+     (unwind-protect
+         (progn
+           (pcase-dolist (`(,name ,text) ,sessions)
+             (let ((buf (get-buffer-create name)))
+               (push buf bufs)
+               (when text
+                 (with-current-buffer buf
+                   (insert text)
+                   (set-process-query-on-exit-flag
+                    (start-process "devops-test" buf "cat") nil)))))
+           ,@body)
+       (let ((kill-buffer-query-functions nil))
+         (dolist (buf bufs)
+           (when (buffer-live-p buf) (kill-buffer buf)))))))
+
+(ert-deftest devops-session-busy-p-test ()
+  "A session is busy from the moment a run is sent until it prints its end."
+  (let ((id devops-test--run-id)
+        (name "devops-test-session"))
+    (should-not (devops--session-busy-p name))
+    (devops-test--with-sessions `((,name ,(devops-test--sent id)))
+      (should (devops--session-busy-p name)))
+    (devops-test--with-sessions
+        `((,name ,(concat (devops-test--sent id)
+                          "ob_comint_async_shell_start_" id "\n")))
+      (should (devops--session-busy-p name)))
+    (devops-test--with-sessions
+        `((,name ,(concat (devops-test--sent id) (devops-test--printed id))))
+      (should-not (devops--session-busy-p name)))))
+
+(ert-deftest devops-session-busy-p-latest-run-test ()
+  "Only the latest run counts, finished runs before it do not."
+  (let ((name "devops-test-session")
+        (other "aaaaaaaa-2222-3333-4444-555555555555"))
+    (devops-test--with-sessions
+        `((,name ,(concat (devops-test--sent other)
+                          (devops-test--printed other)
+                          (devops-test--sent devops-test--run-id))))
+      (should (devops--session-busy-p name)))))
+
+(ert-deftest devops-session-busy-p-python-test ()
+  "ob-python's markers count too; its input never shows in the session."
+  (let ((name "devops-test-session")
+        (id devops-test--run-id))
+    (devops-test--with-sessions
+        `((,name ,(format "ob_comint_async_python_start_%s\n" id)))
+      (should (devops--session-busy-p name)))
+    (devops-test--with-sessions
+        `((,name ,(format (concat "ob_comint_async_python_start_%s\nhi\n"
+                                  "ob_comint_async_python_end_%s\n>>> ")
+                          id id)))
+      (should-not (devops--session-busy-p name)))))
+
+(ert-deftest devops-session-busy-p-dead-process-test ()
+  "A session whose process has died is not busy, whatever it shows."
+  (let ((name "devops-test-session"))
+    (devops-test--with-sessions `((,name nil))
+      (with-current-buffer name
+        (insert (devops-test--sent devops-test--run-id)))
+      (should-not (devops--session-busy-p name)))))
+
+(ert-deftest devops-pool-session-test ()
+  "A block gets the first idle slot, and an error when all are busy."
+  (let ((devops-session-pool-size 2)
+        (busy (devops-test--sent devops-test--run-id))
+        (one "devops:/srv/app/")
+        (two "devops:/srv/app/<2>"))
+    (should (equal (devops--pool-session "/srv/app/") one))
+    (devops-test--with-sessions `((,one ,busy))
+      (should (equal (devops--pool-session "/srv/app/") two)))
+    (devops-test--with-sessions `((,one ,busy) (,two ,busy))
+      (should-error (devops--pool-session "/srv/app/")
+                    :type 'user-error))
+    (devops-test--with-sessions `((,one "$ ") (,two ,busy))
+      (should (equal (devops--pool-session "/srv/app/") one)))
+    (let ((devops-session-pool-size 1))
+      (devops-test--with-sessions `((,one ,busy))
+        (should-error (devops--pool-session "/srv/app/")
+                      :type 'user-error)))))
+
+(ert-deftest devops-session-async-injects-idle-slot-test ()
+  "With the first session busy, a block is sent to the second."
+  (let ((devops-enable-session-async t))
+    (devops-test--with-sessions
+        `(("devops:/srv/app/" ,(devops-test--sent devops-test--run-id)))
+      (devops-test--with-session-org ""
+        (should (equal (cdr (assq :session (devops-test--executor-params "sh")))
+                       "devops:/srv/app/<2>"))))))
 
 (ert-deftest devops-session-async-explicit-session-wins-test ()
   "A `:session' on the block is not overwritten by the tag's session."
@@ -954,7 +1098,7 @@ Return the header arguments the executor was handed, so an injected
   (let ((devops-enable-session-async t))
     (devops-test--with-session-org ":async no"
       (let ((params (devops-test--executor-params "sh")))
-        (should (equal (cdr (assq :session params)) "devops:local /srv/app/"))
+        (should (equal (cdr (assq :session params)) "devops:/srv/app/"))
         (should (equal (cdr (assq :async params)) "no"))))))
 
 (ert-deftest devops-session-async-results-value-stays-sync-test ()
@@ -973,7 +1117,7 @@ status the block asked for; see `devops--shell-value-p'."
   (let ((devops-enable-session-async t))
     (devops-test--with-session-org ":results output"
       (let ((params (devops-test--executor-params "sh")))
-        (should (equal (cdr (assq :session params)) "devops:local /srv/app/"))
+        (should (equal (cdr (assq :session params)) "devops:/srv/app/"))
         (should (equal (cdr (assq :async params)) "yes"))))))
 
 (ert-deftest devops-session-async-default-results-follow-ob-shell-test ()
@@ -1088,7 +1232,7 @@ runs there at the target's directory, and `org-babel-comint-async-filter'
 replaces the placeholder in the buffer when the command finishes."
   (let ((devops-enable-session-async t))
     (devops-test--with-local-target target
-      (let ((session (devops--session-name "local" target)))
+      (let ((session (devops--session-name target)))
         (unwind-protect
             (devops-test--with-org
                 (format (concat "#+TARGET: %s (local)\n\n"
@@ -1116,6 +1260,43 @@ replaces the placeholder in the buffer when the command finishes."
           (when-let* ((buf (get-buffer session)))
             (let ((kill-buffer-query-functions nil))
               (kill-buffer buf))))))))
+
+(ert-deftest devops-session-async-parallel-blocks-test ()
+  "Two blocks run at once go to two sessions, and each gets its own output.
+Sent to one shell, the second block's input landed inside the first
+block's markers: the first result showed it, and the second kept its
+placeholder."
+  (let ((devops-enable-session-async t)
+        (devops-session-pool-size 2))
+    (devops-test--with-local-target target
+      (unwind-protect
+          (devops-test--with-org
+              (format (concat "#+TARGET: %s (local)\n\n"
+                              "* Run\t\t:local:\n\n"
+                              "#+begin_src sh\nsleep 1 && echo one\n#+end_src\n\n"
+                              "#+begin_src sh\necho two\n#+end_src\n")
+                      target)
+            (let ((org-confirm-babel-evaluate nil)
+                  (deadline (+ (float-time) 30))
+                  uuids)
+              (goto-char (point-min))
+              (dolist (_ '(1 2))
+                (re-search-forward "begin_src")
+                (push (org-babel-execute-src-block) uuids))
+              (should (get-buffer (devops--session-name target 2)))
+              (while (and (< (float-time) deadline)
+                          (seq-some (lambda (uuid)
+                                      (save-excursion
+                                        (goto-char (point-min))
+                                        (search-forward uuid nil t)))
+                                    uuids))
+                (accept-process-output nil 0.2))
+              (goto-char (point-min))
+              (dolist (want '("one" "two"))
+                (should (re-search-forward "^#\\+RESULTS:\n: \\(.*\\)$" nil t))
+                (should (equal (match-string 1) want)))))
+        (let ((kill-buffer-query-functions nil))
+          (mapc #'kill-buffer (devops--pool-buffers target)))))))
 
 (ert-deftest devops-session-async-var-reference-test ()
   "A `:var' naming another block gets that block's output, not a placeholder.
@@ -1153,7 +1334,7 @@ UUID inside the caller's freshly inserted result."
               (re-search-forward "begin_src sh :var")
               (should (re-search-forward "^: \\(.+\\)$" nil t))
               (should (equal (org-trim (match-string 1)) "hi Kyle"))))
-        (when-let* ((buf (get-buffer "devops:local /srv/app/")))
+        (when-let* ((buf (get-buffer "devops:/srv/app/")))
           (let ((kill-buffer-query-functions nil))
             (kill-buffer buf)))))))
 
@@ -1182,20 +1363,40 @@ override (issue #14)."
             (re-search-forward "^#\\+call")
             (let ((org-confirm-babel-evaluate nil))
               (should (equal (org-trim (org-ctrl-c-ctrl-c)) "hi Kyle"))))
-        (when-let* ((buf (get-buffer "devops:local /srv/app/")))
+        (when-let* ((buf (get-buffer "devops:/srv/app/")))
           (let ((kill-buffer-query-functions nil))
             (kill-buffer buf)))))))
 
 (ert-deftest devops-goto-session-test ()
   "`devops-goto-session' pops to the heading's session buffer."
   (let ((devops-enable-session-async t)
-        (buf (get-buffer-create "devops:local /srv/app/")))
+        (buf (get-buffer-create "devops:/srv/app/")))
     (unwind-protect
         (devops-test--with-session-org ""
           (save-window-excursion
             (devops-goto-session)
             (should (eq (current-buffer) buf))))
       (kill-buffer buf))))
+
+(ert-deftest devops-goto-session-pool-test ()
+  "With several sessions, `devops-goto-session' reads one, a busy one first."
+  (let ((devops-enable-session-async t)
+        (default nil))
+    (devops-test--with-sessions
+        `(("devops:/srv/app/" "$ ")
+          ("devops:/srv/app/<2>" ,(devops-test--sent devops-test--run-id))
+          ("devops:/srv/other/" "$ "))
+      (devops-test--with-session-org ""
+        (cl-letf (((symbol-function 'completing-read)
+                   (lambda (_prompt names &rest args)
+                     (should (equal names '("devops:/srv/app/"
+                                            "devops:/srv/app/<2>")))
+                     (setq default (nth 4 args))
+                     (car names))))
+          (save-window-excursion
+            (devops-goto-session)
+            (should (equal (buffer-name) "devops:/srv/app/"))))
+        (should (equal default "devops:/srv/app/<2>"))))))
 
 (ert-deftest devops-goto-session-without-buffer-errors-test ()
   "`devops-goto-session' says so when the session has not been started."
@@ -1204,14 +1405,16 @@ override (issue #14)."
       (should-error (devops-goto-session) :type 'user-error))))
 
 (ert-deftest devops-restart-session-test ()
-  "`devops-restart-session' kills the heading's session buffer."
-  (let ((devops-enable-session-async t)
-        (buf (get-buffer-create "devops:local /srv/app/")))
-    (unwind-protect
-        (devops-test--with-session-org ""
-          (devops-restart-session)
-          (should-not (buffer-live-p buf)))
-      (when (buffer-live-p buf) (kill-buffer buf)))))
+  "`devops-restart-session' kills every session in the heading's pool."
+  (let ((devops-enable-session-async t))
+    (devops-test--with-sessions '(("devops:/srv/app/" "$ ")
+                                  ("devops:/srv/app/<2>" "$ ")
+                                  ("devops:/srv/other/" "$ "))
+      (devops-test--with-session-org ""
+        (devops-restart-session))
+      (should-not (get-buffer "devops:/srv/app/"))
+      (should-not (get-buffer "devops:/srv/app/<2>"))
+      (should (get-buffer "devops:/srv/other/")))))
 
 (ert-deftest devops-session-no-target-errors-test ()
   "The session commands error on a heading with no target tag."

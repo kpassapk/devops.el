@@ -305,7 +305,7 @@ the `session` and `async` headers yourself. For example,
 injects these `dir`, `session` and `async` headers:
 
 ```org
-#+begin_src sh :results output :dir /ssh:example.com: :session "devops:example /ssh:example.com:" :async yes
+#+begin_src sh :results output :dir /ssh:example.com: :session "devops:/ssh:example.com:" :async yes
   apt-get update
 #+end_src
 ```
@@ -315,6 +315,22 @@ To enable, set `devops-enable-session-async`.
 ```elisp
 (setq devops-enable-session-async t)
 ```
+
+Up to `devops-session-pool-size` (default 2) sessions can run in parallel per target.
+They are named after the target, `devops:/ssh:example.com:` and
+`devops:/ssh:example.com:<2>`, so headings and files that use the same
+target share them.
+
+![pool](./docs/images/devops-async-pool.gif)
+
+When they are all busy, running another block is an error.
+
+The sessions in a pool share nothing, so don't write blocks that rely on
+a `cd` or `export` from an earlier block. A block with its own
+`:session` header runs in that session, outside the pool.
+
+`M-x devops-goto-session` pops to a session of the heading's target, and
+`M-x devops-restart-session` kills all of them.
 
 Caveats:
 

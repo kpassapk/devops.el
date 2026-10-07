@@ -63,6 +63,7 @@
 ;;; Code:
 
 (require 'cl-lib)  ; cl-progv
+(require 'comint)  ; comint-check-proc
 (require 'org)
 (require 'org-element)  ; org-element-property / org-element-at-point
 (require 'ob-tangle)    ; advised below: org-babel-tangle-collect-blocks
@@ -93,10 +94,15 @@ are not idempotent.  It is also turned off for `:results value'."
   :type 'boolean
   :group 'devops)
 
-(defcustom devops-session-name-function
-  (lambda (tag target) (format "devops:%s %s" tag target))
-  "Function mapping a target TAG and TARGET to a session name."
-  :type 'function
+(defcustom devops-session-pool-size 2
+  "How many sessions one target may run blocks in at once.
+A block runs in the first idle session of its target's pool, so blocks
+run one after another all land in the first.  When every session is
+busy, running another block is an error.
+
+The sessions share nothing: a block must not rely on a `cd' or an
+`export' from an earlier one."
+  :type 'natnum
   :group 'devops)
 
 (defcustom devops-async-session-languages '("sh" "bash" "shell" "python")
@@ -250,9 +256,58 @@ for any value other than those in `devops--target-none-values'."
     (or (member (cdr cell) devops--target-none-values)
         (user-error "Unknown :target value %S (expected nil)" (cdr cell)))))
 
-(defun devops--session-name (tag target)
-  "Return the session name for TAG and TARGET."
-  (funcall devops-session-name-function tag target))
+(defun devops--session-name (target &optional slot)
+  "Return the name of session SLOT in the pool for TARGET.
+SLOT counts from 1, the default.  Slot 1 is \"devops:TARGET\" and slot N
+adds \"<N>\", the way Emacs names a second buffer."
+  (format "devops:%s%s"
+          (if (tramp-tramp-file-p target)
+              target
+            (file-name-as-directory (expand-file-name target)))
+          (if (and slot (> slot 1)) (format "<%d>" slot) "")))
+
+(defun devops--async-marker (kind id)
+  "Return a regexp for ob-comint's KIND marker of the async run ID.
+KIND is \"start\" or \"end\", and ID a regexp."
+  (format "ob_comint_async_[a-z]+_%s_%s" kind id))
+
+(defun devops--session-busy-p (name)
+  "Non-nil when the session NAME is still running an async block.
+ob-comint brackets each run with a start and an end marker.  A marker
+shows up quoted in the input sent to the session, and bare once the run
+prints it, so a run is over when its end marker shows up bare.  Only the
+latest run counts: a block is never sent to a busy session."
+  (when-let* ((buf (get-buffer name))
+              ((comint-check-proc buf)))
+    (with-current-buffer buf
+      (save-excursion
+        (goto-char (point-max))
+        (when (re-search-backward
+               (devops--async-marker "start" "\\([-0-9a-f]+\\)") nil t)
+          (not (re-search-forward
+                (concat (devops--async-marker
+                         "end" (regexp-quote (match-string-no-properties 1)))
+                        "\\(?:[^']\\|$\\)")
+                nil t)))))))
+
+(defun devops--pool-session (target)
+  "Return the name of an idle session in the pool for TARGET.
+Slots are tried in order.  Signal a `user-error' when all
+`devops-session-pool-size' of them are busy."
+  (or (cl-loop for slot from 1 to devops-session-pool-size
+               for name = (devops--session-name target slot)
+               unless (devops--session-busy-p name) return name)
+      (user-error "All %d sessions for %s are busy; wait for one, \
+or give the block its own :session"
+                  devops-session-pool-size target)))
+
+(defun devops--pool-buffers (target)
+  "Return the live session buffers in the pool for TARGET, by slot."
+  (let ((re (concat "\\`" (regexp-quote (devops--session-name target))
+                    "\\(?:<[0-9]+>\\)?\\'")))
+    (sort (seq-filter (lambda (buf) (string-match-p re (buffer-name buf)))
+                      (buffer-list))
+          (lambda (a b) (string-version-lessp (buffer-name a) (buffer-name b))))))
 
 (defun devops--user-header-args (lang)
   "Return the header arguments written on the src block at point.
@@ -296,10 +351,10 @@ LANG is the block's language; PARAMS and BLOCK-PARAMS are as in
                (not (bound-and-true-p
                      org-babel-shell-results-defaults-to-output)))))))
 
-(defun devops--async-session-cells (params block-params lang tag target)
+(defun devops--async-session-cells (params block-params lang target)
   "Return the :session and :async header cells to inject, or nil.
 PARAMS, BLOCK-PARAMS and LANG are as in `devops--session-declared-p';
-TAG and TARGET name the heading's target."
+TARGET is the heading's target."
   (when (and devops-enable-session-async
              (not devops--inhibit-async)
              (member lang devops-async-session-languages)
@@ -309,7 +364,7 @@ TAG and TARGET name the heading's target."
       (unless (and declared (equal session "none"))
         (append
          (unless declared
-           (list (cons :session (devops--session-name tag target))))
+           (list (cons :session (devops--pool-session target))))
          (unless (devops--header-cell :async params block-params)
            (list (cons :async "yes"))))))))
 
@@ -333,7 +388,7 @@ rewritten."
              (append (cons (cons :dir (cdr pair))
                            (devops--async-session-cells
                             params block-params (nth 0 block-info)
-                            (car pair) (cdr pair)))
+                            (cdr pair)))
                      params))
             ;; Called with fewer than three arguments -- the interactive
             ;; case passes none -- PARAMS still needs a slot to land in.
@@ -363,35 +418,44 @@ rewritten."
                    #'devops--inject-header-args-from-tags)
     (advice-remove 'org-babel-ref-resolve #'devops--resolve-ref-sync)))
 
-(defun devops--heading-session-name ()
-  "Return the session name for the current heading's target.
-Signal a `user-error' if no tag on the heading names a target."
+(defun devops--heading-sessions ()
+  "Return (NAME . BUFFERS) for the current heading's target.
+NAME is the first session's name, and BUFFERS the live sessions in the
+pool.  Signal a `user-error' if no tag on the heading names a target."
   (let ((pair (or (devops--heading-target)
                   (user-error "No #+TARGET match for tags on current heading"))))
-    (devops--session-name (car pair) (cdr pair))))
+    (cons (devops--session-name (cdr pair))
+          (devops--pool-buffers (cdr pair)))))
 
 ;;;###autoload
 (defun devops-goto-session ()
-  "Pop to the session buffer for the current heading's target."
+  "Pop to a session buffer for the current heading's target.
+When the target has several, read which one, offering a busy one first."
   (interactive)
-  (let ((name (devops--heading-session-name)))
+  (pcase-let* ((`(,name . ,bufs) (devops--heading-sessions))
+               (names (mapcar #'buffer-name bufs)))
     (pop-to-buffer
-     (or (get-buffer name)
-         (user-error "No session %s yet; run a block under this heading" name)))))
+     (cond ((null bufs)
+            (user-error "No session %s yet; run a block under this heading"
+                        name))
+           ((cdr bufs)
+            (completing-read "Session: " names nil t nil nil
+                             (or (seq-find #'devops--session-busy-p names)
+                                 (car names))))
+           (t (car bufs))))))
 
 ;;;###autoload
 (defun devops-restart-session ()
-  "Kill the session buffer for the current heading's target."
+  "Kill every session buffer for the current heading's target."
   (interactive)
-  (let* ((name (devops--heading-session-name))
-         (buf (get-buffer name)))
-    (if (not buf)
+  (pcase-let ((`(,name . ,bufs) (devops--heading-sessions)))
+    (if (not bufs)
         (message "No session %s" name)
       ;; A live comint process would otherwise ask for confirmation, which
       ;; is the whole point of the command.
       (let ((kill-buffer-query-functions nil))
-        (kill-buffer buf))
-      (message "Killed session %s" name))))
+        (mapc #'kill-buffer bufs))
+      (message "Killed %s" (mapconcat #'buffer-name bufs ", ")))))
 
 (defun devops--split-target (target)
   "Split TARGET into a (PREFIX . ROOT) cons."
