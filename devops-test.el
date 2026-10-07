@@ -2130,6 +2130,33 @@ The block's body is on line 6."
       (should-not (alist-get :output out))
       (should (equal (alist-get :result out) devops-test--run-a)))))
 
+(ert-deftest devops-scripting-block-output-pool-test ()
+  "A block's run is found in whichever session of the pool ran it.
+The session holding the ID in #+RESULTS wins over an earlier run of the
+same block in another session."
+  (devops-test--with-transcript "devops:local /srv/app/"
+      (devops-test--run-text devops-test--run-a "echo two"
+                             (concat devops-test--prompt "two\n") t)
+    (devops-test--with-transcript "devops:local /srv/app/<2>"
+        (concat (devops-test--run-text devops-test--run-b "echo two" "" nil)
+                (devops-test--run-text "22222222-2222-3333-4444-555555555555"
+                                       "echo three"
+                                       (concat devops-test--prompt "three\n") t))
+      (devops-test--with-org
+          (concat "#+TARGET: /srv/app/ (local)\n\n"
+                  "* Run\t\t:local:\n\n"
+                  "#+begin_src sh\necho two\n#+end_src\n\n"
+                  "#+RESULTS:\n: " devops-test--run-b "\n\n"
+                  "#+begin_src sh\necho three\n#+end_src\n")
+        (let ((out (devops-scripting-block-output (current-buffer) 6)))
+          (should (equal (alist-get :session out) "devops:local /srv/app/<2>"))
+          (should (eq (alist-get :status out) :running))
+          (should (equal (alist-get :id out) devops-test--run-b)))
+        (let ((out (devops-scripting-block-output (current-buffer) 12)))
+          (should (equal (alist-get :session out) "devops:local /srv/app/<2>"))
+          (should (eq (alist-get :status out) :done))
+          (should (equal (alist-get :output out) "three")))))))
+
 (ert-deftest devops-scripting-block-output-two-targets-test ()
   "A heading with two targets is an error naming them, not a prompt."
   (devops-test--with-org
@@ -2277,6 +2304,18 @@ The entry names the session from the target the run resolved."
             (should (= 1 (length entries)))
             (should (equal (alist-get 'session (car entries))
                            (devops--session-name "local" target)))))))))
+
+(ert-deftest devops-execution-log-pool-session-test ()
+  "A run is logged with the session of the pool it was sent to."
+  (let ((devops-enable-session-async t))
+    (devops-test--with-execution-log log
+      (devops-test--with-sessions
+          `(("devops:local /srv/app/" ,(devops-test--sent devops-test--run-id)))
+        (devops-test--with-session-org ""
+          (devops-test--executor-params "sh")
+          (should (equal (alist-get 'session
+                                    (car (devops-test--log-entries log)))
+                         "devops:local /srv/app/<2>")))))))
 
 (ert-deftest devops-execution-log-off-test ()
   "With `devops-execution-log' nil, a run writes no log."

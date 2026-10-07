@@ -377,6 +377,13 @@ Bound by `devops--execute-on-target' for the run, so that
 `org-babel-after-execute-hook' knows where the block ran.  Resolving
 the target there again would run a dynamic target's block again.")
 
+(defvar devops--block-session nil
+  "The name of the session the src block being executed was sent to.
+Bound by `devops--execute-on-target' for the run, alongside
+`devops--block-target': a pool has several sessions, and only the
+injected header says which one the block got.  For a block run with no
+session, the target's first.")
+
 (defun devops--execution-target (args)
   "Return the (TAG . TARGET) a run of `org-babel-execute-src-block' gets.
 ARGS is its whole argument list.  Nil when the block opted out with
@@ -418,9 +425,16 @@ is the target, and :session and :async are injected as decision 2 says."
   "Advise `org-babel-execute-src-block' (FN with ARGS) to run on the target.
 The heading's #+TARGET is resolved once, injected by
 `devops--inject-header-args', and bound to `devops--block-target' for
-the run."
-  (let ((devops--block-target (devops--execution-target args)))
-    (apply fn (devops--inject-header-args args devops--block-target))))
+the run, with the session it gets bound to `devops--block-session'."
+  (let* ((devops--block-target (devops--execution-target args))
+         (args (devops--inject-header-args args devops--block-target))
+         (devops--block-session
+          (when-let* ((pair devops--block-target))
+            (let ((session (cdr (assq :session (nth 2 args)))))
+              (if (and session (not (equal session "none")))
+                  session
+                (devops--session-name (car pair) (cdr pair)))))))
+    (apply fn args)))
 
 (defun devops--resolve-ref-sync (fn &rest args)
   "Run `org-babel-ref-resolve' (FN with ARGS) under `devops-with-sync'."
@@ -498,8 +512,7 @@ An async block has only started: its status is `:running', and its
 result is logged again by `devops--log-async-result'."
   (when org-babel-current-src-block-location
     (devops--log "execute" org-babel-current-src-block-location
-                 (when-let* ((pair devops--block-target))
-                   (devops--session-name (car pair) (cdr pair))))))
+                 devops--block-session)))
 
 (defvar devops--async-result nil
   "The session's name while ob-comint inserts the result of an async run.

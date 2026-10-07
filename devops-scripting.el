@@ -268,15 +268,32 @@ session was killed or restarted, or the block never ran in one -- async
 off, `:results value', `:session none', a language with no session.  A
 placeholder there is not output, and :output is nil.
 
-Nothing is run.  The session name is the one devops.el would use, so a
-dynamic target is resolved, and that runs its block; see
+The target has a pool of sessions, and the block may have run in any of
+them.  The one holding the ID in #+RESULTS is read, else the first, in
+slot order, that holds a run of the block.
+
+Nothing is run.  The session names are the ones devops.el would use, so
+a dynamic target is resolved, and that runs its block; see
 `devops--resolve-target-for-tag'."
   (with-current-buffer (devops-scripting--source-buffer source)
     (save-excursion
       (let* ((el (devops-scripting--src-block-at line))
-             (pair (devops-scripting--target tag)))
-        (devops-scripting--block-output
-         el (devops--session-name (car pair) (cdr pair)))))))
+             (pair (devops-scripting--target tag))
+             (names (or (mapcar #'buffer-name
+                                (devops--pool-buffers (car pair) (cdr pair)))
+                        (list (devops--session-name (car pair) (cdr pair)))))
+             (answers (mapcar (lambda (name)
+                                (devops-scripting--block-output el name))
+                              names))
+             (result (devops-scripting--results-text))
+             (id (and result
+                      (string-match devops-scripting--uuid-regexp result)
+                      (match-string 0 result))))
+        (or (and id (seq-find (lambda (answer)
+                                (equal id (alist-get :id answer)))
+                              answers))
+            (seq-find (lambda (answer) (alist-get :id answer)) answers)
+            (car answers))))))
 
 (defun devops-scripting--block-output (el name)
   "Return what EL, the src block at point, printed in session NAME.
@@ -371,8 +388,7 @@ a line, on something that is not its own prompt, is a program asking --
   :id         the async ID of its latest run
 
 Every session `org-babel-comint-async-register' set up is listed, not
-only those devops.el named, because `devops-session-name-function' can
-name them anything."
+only those devops.el named: a block's own `:session' names one too."
   (let (sessions)
     (dolist (buf (buffer-list))
       (when (and (devops-scripting--session-p buf)

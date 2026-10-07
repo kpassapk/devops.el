@@ -106,10 +106,12 @@ grep -c nginx
 - **`:target nil`** runs one block locally under a tagged heading, for
   example to process a remote block's output with `:stdin`. An explicit
   `:dir` also wins over the tag.
-- **Sessions are stateful.** With async sessions on, `cd`, `export` and
-  activated virtualenvs carry over from one block to the next. Write
-  blocks that don't depend on the ones above them, so a block that
-  passes still passes after `M-x devops-restart-session`.
+- **Don't rely on session state.** With async sessions on, each target
+  has a pool of sessions (`devops-session-pool-size`, default 2), so the
+  user can run blocks in parallel. A block goes to the first idle one,
+  so a `cd`, `export` or virtualenv from an earlier block may or may not
+  be there. Write blocks that don't depend on the ones above them. When
+  every session is busy, running a block is an error: wait for one.
 - **Tangling.** `:tangle PATH` under a tagged heading writes to the
   target when the user runs `devops-tangle`. A relative PATH lands under
   the target's directory; `/etc/f` and `~/f` are absolute on the target's
