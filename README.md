@@ -313,7 +313,7 @@ the `session` and `async` headers yourself. For example,
 injects these `dir`, `session` and `async` headers:
 
 ```org
-#+begin_src sh :results output :dir /ssh:example.com: :session "devops:example /ssh:example.com:" :async yes
+#+begin_src sh :results output :dir /ssh:example.com: :session "devops:/ssh:example.com:" :async yes
   apt-get update
 #+end_src
 ```
@@ -325,6 +325,9 @@ To enable, set `devops-enable-session-async`.
 ```
 
 Up to `devops-session-pool-size` (default 2) sessions can run in parallel per target.
+They are named after the target, `devops:/ssh:example.com:` and
+`devops:/ssh:example.com:<2>`, so headings and files that use the same
+target share them.
 
 ![pool](./docs/images/devops-async-pool.gif)
 

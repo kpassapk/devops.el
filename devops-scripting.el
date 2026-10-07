@@ -280,8 +280,8 @@ a dynamic target is resolved, and that runs its block; see
       (let* ((el (devops-scripting--src-block-at line))
              (pair (devops-scripting--target tag))
              (names (or (mapcar #'buffer-name
-                                (devops--pool-buffers (car pair) (cdr pair)))
-                        (list (devops--session-name (car pair) (cdr pair)))))
+                                (devops--pool-buffers (cdr pair)))
+                        (list (devops--session-name (cdr pair)))))
              (answers (mapcar (lambda (name)
                                 (devops-scripting--block-output el name))
                               names))

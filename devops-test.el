@@ -930,34 +930,48 @@ Return the header arguments the executor was handed, so an injected
     (devops-test--with-session-org ""
       (let ((params (devops-test--executor-params "sh")))
         (should (equal (cdr (assq :dir params)) "/srv/app/"))
-        (should (equal (cdr (assq :session params)) "devops:local /srv/app/"))
+        (should (equal (cdr (assq :session params)) "devops:/srv/app/"))
         (should (equal (cdr (assq :async params)) "yes"))))))
 
 (ert-deftest devops-session-name-relative-target-test ()
-  "A relative target names its session by the directory it expands to.
+  "A session is named by its target's directory, whatever the tag.
 Two org files with the same relative #+TARGET in different directories
-get different sessions; absolute, `~' and TRAMP targets are left as is."
+get different sessions, and `~' is expanded; TRAMP targets are left as is."
   (let ((default-directory "/srv/one/app/"))
-    (should (equal (devops--session-name "project" "..")
-                   "devops:project /srv/one/"))
-    (should (equal (devops--session-name "project" ".")
-                   "devops:project /srv/one/app/"))
-    (should (equal (devops--session-name "home" "~/src")
-                   "devops:home ~/src"))
-    (should (equal (devops--session-name "server" "/ssh:app@host:")
-                   "devops:server /ssh:app@host:")))
+    (should (equal (devops--session-name "..") "devops:/srv/one/"))
+    (should (equal (devops--session-name ".") "devops:/srv/one/app/"))
+    (should (equal (devops--session-name "/srv/one") "devops:/srv/one/"))
+    (should (equal (devops--session-name "~/src")
+                   (concat "devops:" (expand-file-name "~/src/"))))
+    (should (equal (devops--session-name "/ssh:app@host:")
+                   "devops:/ssh:app@host:")))
   (let ((default-directory "/srv/two/app/"))
-    (should (equal (devops--session-name "project" "..")
-                   "devops:project /srv/two/"))))
+    (should (equal (devops--session-name "..") "devops:/srv/two/"))))
 
 ;;; Session pool
 
+(ert-deftest devops-session-two-tags-one-target-test ()
+  "Two tags for the same target send their blocks to the same session."
+  (let ((devops-enable-session-async t))
+    (devops-test--with-org
+        (concat "#+TARGET: /srv/app/ (web)
+#+TARGET: /srv/app (api)
+
+"
+                "* Web\t\t:web:\n\n#+begin_src sh\npwd\n#+end_src\n\n"
+                "* Api\t\t:api:\n\n#+begin_src sh\npwd\n#+end_src\n")
+      (goto-char (point-min))
+      (dolist (_ '(web api))
+        (re-search-forward "begin_src")
+        (should (equal (cdr (assq :session (devops-test--executor-params "sh")))
+                       "devops:/srv/app/"))))))
+
 (ert-deftest devops-session-name-slot-test ()
   "Slot 1 of a pool has the bare name; slot N adds \"<N>\"."
-  (should (equal (devops--session-name "local" "/srv/app/" 1)
-                 "devops:local /srv/app/"))
-  (should (equal (devops--session-name "local" "/srv/app/" 2)
-                 "devops:local /srv/app/<2>")))
+  (should (equal (devops--session-name "/srv/app/" 1)
+                 "devops:/srv/app/"))
+  (should (equal (devops--session-name "/srv/app/" 2)
+                 "devops:/srv/app/<2>")))
 
 (defconst devops-test--run-id "11111111-2222-3333-4444-555555555555"
   "The async run ID in the fake session transcripts below.")
@@ -1048,29 +1062,29 @@ without a process."
   "A block gets the first idle slot, and an error when all are busy."
   (let ((devops-session-pool-size 2)
         (busy (devops-test--sent devops-test--run-id))
-        (one "devops:local /srv/app/")
-        (two "devops:local /srv/app/<2>"))
-    (should (equal (devops--pool-session "local" "/srv/app/") one))
+        (one "devops:/srv/app/")
+        (two "devops:/srv/app/<2>"))
+    (should (equal (devops--pool-session "/srv/app/") one))
     (devops-test--with-sessions `((,one ,busy))
-      (should (equal (devops--pool-session "local" "/srv/app/") two)))
+      (should (equal (devops--pool-session "/srv/app/") two)))
     (devops-test--with-sessions `((,one ,busy) (,two ,busy))
-      (should-error (devops--pool-session "local" "/srv/app/")
+      (should-error (devops--pool-session "/srv/app/")
                     :type 'user-error))
     (devops-test--with-sessions `((,one "$ ") (,two ,busy))
-      (should (equal (devops--pool-session "local" "/srv/app/") one)))
+      (should (equal (devops--pool-session "/srv/app/") one)))
     (let ((devops-session-pool-size 1))
       (devops-test--with-sessions `((,one ,busy))
-        (should-error (devops--pool-session "local" "/srv/app/")
+        (should-error (devops--pool-session "/srv/app/")
                       :type 'user-error)))))
 
 (ert-deftest devops-session-async-injects-idle-slot-test ()
   "With the first session busy, a block is sent to the second."
   (let ((devops-enable-session-async t))
     (devops-test--with-sessions
-        `(("devops:local /srv/app/" ,(devops-test--sent devops-test--run-id)))
+        `(("devops:/srv/app/" ,(devops-test--sent devops-test--run-id)))
       (devops-test--with-session-org ""
         (should (equal (cdr (assq :session (devops-test--executor-params "sh")))
-                       "devops:local /srv/app/<2>"))))))
+                       "devops:/srv/app/<2>"))))))
 
 (ert-deftest devops-session-async-explicit-session-wins-test ()
   "A `:session' on the block is not overwritten by the tag's session."
@@ -1093,7 +1107,7 @@ without a process."
   (let ((devops-enable-session-async t))
     (devops-test--with-session-org ":async no"
       (let ((params (devops-test--executor-params "sh")))
-        (should (equal (cdr (assq :session params)) "devops:local /srv/app/"))
+        (should (equal (cdr (assq :session params)) "devops:/srv/app/"))
         (should (equal (cdr (assq :async params)) "no"))))))
 
 (ert-deftest devops-session-async-results-value-stays-sync-test ()
@@ -1112,7 +1126,7 @@ status the block asked for; see `devops--shell-value-p'."
   (let ((devops-enable-session-async t))
     (devops-test--with-session-org ":results output"
       (let ((params (devops-test--executor-params "sh")))
-        (should (equal (cdr (assq :session params)) "devops:local /srv/app/"))
+        (should (equal (cdr (assq :session params)) "devops:/srv/app/"))
         (should (equal (cdr (assq :async params)) "yes"))))))
 
 (ert-deftest devops-session-async-default-results-follow-ob-shell-test ()
@@ -1227,7 +1241,7 @@ runs there at the target's directory, and `org-babel-comint-async-filter'
 replaces the placeholder in the buffer when the command finishes."
   (let ((devops-enable-session-async t))
     (devops-test--with-local-target target
-      (let ((session (devops--session-name "local" target)))
+      (let ((session (devops--session-name target)))
         (unwind-protect
             (devops-test--with-org
                 (format (concat "#+TARGET: %s (local)\n\n"
@@ -1278,7 +1292,7 @@ placeholder."
               (dolist (_ '(1 2))
                 (re-search-forward "begin_src")
                 (push (org-babel-execute-src-block) uuids))
-              (should (get-buffer (devops--session-name "local" target 2)))
+              (should (get-buffer (devops--session-name target 2)))
               (while (and (< (float-time) deadline)
                           (seq-some (lambda (uuid)
                                       (save-excursion
@@ -1291,7 +1305,7 @@ placeholder."
                 (should (re-search-forward "^#\\+RESULTS:\n: \\(.*\\)$" nil t))
                 (should (equal (match-string 1) want)))))
         (let ((kill-buffer-query-functions nil))
-          (mapc #'kill-buffer (devops--pool-buffers "local" target)))))))
+          (mapc #'kill-buffer (devops--pool-buffers target)))))))
 
 (ert-deftest devops-session-async-var-reference-test ()
   "A `:var' naming another block gets that block's output, not a placeholder.
@@ -1329,7 +1343,7 @@ UUID inside the caller's freshly inserted result."
               (re-search-forward "begin_src sh :var")
               (should (re-search-forward "^: \\(.+\\)$" nil t))
               (should (equal (org-trim (match-string 1)) "hi Kyle"))))
-        (when-let* ((buf (get-buffer "devops:local /srv/app/")))
+        (when-let* ((buf (get-buffer "devops:/srv/app/")))
           (let ((kill-buffer-query-functions nil))
             (kill-buffer buf)))))))
 
@@ -1358,14 +1372,14 @@ override (issue #14)."
             (re-search-forward "^#\\+call")
             (let ((org-confirm-babel-evaluate nil))
               (should (equal (org-trim (org-ctrl-c-ctrl-c)) "hi Kyle"))))
-        (when-let* ((buf (get-buffer "devops:local /srv/app/")))
+        (when-let* ((buf (get-buffer "devops:/srv/app/")))
           (let ((kill-buffer-query-functions nil))
             (kill-buffer buf)))))))
 
 (ert-deftest devops-goto-session-test ()
   "`devops-goto-session' pops to the heading's session buffer."
   (let ((devops-enable-session-async t)
-        (buf (get-buffer-create "devops:local /srv/app/")))
+        (buf (get-buffer-create "devops:/srv/app/")))
     (unwind-protect
         (devops-test--with-session-org ""
           (save-window-excursion
@@ -1378,20 +1392,20 @@ override (issue #14)."
   (let ((devops-enable-session-async t)
         (default nil))
     (devops-test--with-sessions
-        `(("devops:local /srv/app/" "$ ")
-          ("devops:local /srv/app/<2>" ,(devops-test--sent devops-test--run-id))
-          ("devops:other /srv/app/" "$ "))
+        `(("devops:/srv/app/" "$ ")
+          ("devops:/srv/app/<2>" ,(devops-test--sent devops-test--run-id))
+          ("devops:/srv/other/" "$ "))
       (devops-test--with-session-org ""
         (cl-letf (((symbol-function 'completing-read)
                    (lambda (_prompt names &rest args)
-                     (should (equal names '("devops:local /srv/app/"
-                                            "devops:local /srv/app/<2>")))
+                     (should (equal names '("devops:/srv/app/"
+                                            "devops:/srv/app/<2>")))
                      (setq default (nth 4 args))
                      (car names))))
           (save-window-excursion
             (devops-goto-session)
-            (should (equal (buffer-name) "devops:local /srv/app/"))))
-        (should (equal default "devops:local /srv/app/<2>"))))))
+            (should (equal (buffer-name) "devops:/srv/app/"))))
+        (should (equal default "devops:/srv/app/<2>"))))))
 
 (ert-deftest devops-goto-session-without-buffer-errors-test ()
   "`devops-goto-session' says so when the session has not been started."
@@ -1402,14 +1416,14 @@ override (issue #14)."
 (ert-deftest devops-restart-session-test ()
   "`devops-restart-session' kills every session in the heading's pool."
   (let ((devops-enable-session-async t))
-    (devops-test--with-sessions '(("devops:local /srv/app/" "$ ")
-                                  ("devops:local /srv/app/<2>" "$ ")
-                                  ("devops:other /srv/app/" "$ "))
+    (devops-test--with-sessions '(("devops:/srv/app/" "$ ")
+                                  ("devops:/srv/app/<2>" "$ ")
+                                  ("devops:/srv/other/" "$ "))
       (devops-test--with-session-org ""
         (devops-restart-session))
-      (should-not (get-buffer "devops:local /srv/app/"))
-      (should-not (get-buffer "devops:local /srv/app/<2>"))
-      (should (get-buffer "devops:other /srv/app/")))))
+      (should-not (get-buffer "devops:/srv/app/"))
+      (should-not (get-buffer "devops:/srv/app/<2>"))
+      (should (get-buffer "devops:/srv/other/")))))
 
 (ert-deftest devops-session-no-target-errors-test ()
   "The session commands error on a heading with no target tag."
@@ -2053,7 +2067,7 @@ the buffer-local marker regexp -- without a shell behind it."
 
 (ert-deftest devops-scripting-block-output-test ()
   "The output of the block at a line, from the heading's session."
-  (devops-test--with-transcript "devops:local /srv/app/" (devops-test--transcript)
+  (devops-test--with-transcript "devops:/srv/app/" (devops-test--transcript)
     (devops-test--with-org
         (concat "#+TARGET: /srv/app/ (local)\n\n"
                 "* Run\t\t:local:\n\n"
@@ -2062,7 +2076,7 @@ the buffer-local marker regexp -- without a shell behind it."
                 "#+begin_src sh\necho two\n#+end_src\n\n"
                 "#+begin_src sh\necho three\n#+end_src\n")
       (let ((out (devops-scripting-block-output (current-buffer) 6)))
-        (should (equal (alist-get :session out) "devops:local /srv/app/"))
+        (should (equal (alist-get :session out) "devops:/srv/app/"))
         (should (eq (alist-get :status out) :done))
         (should (equal (alist-get :id out) devops-test--run-a))
         (should (eq (alist-get :source out) :session))
@@ -2103,7 +2117,7 @@ The block's body is on line 6."
 
 (ert-deftest devops-scripting-block-output-results-not-found-test ()
   "A session that never ran the block falls back to #+RESULTS too."
-  (devops-test--with-transcript "devops:local /srv/app/" (devops-test--transcript)
+  (devops-test--with-transcript "devops:/srv/app/" (devops-test--transcript)
     (devops-test--with-result-org ": hi\n"
       (let ((out (devops-scripting-block-output (current-buffer) 6)))
         (should (eq (alist-get :status out) :not-found))
@@ -2134,10 +2148,10 @@ The block's body is on line 6."
   "A block's run is found in whichever session of the pool ran it.
 The session holding the ID in #+RESULTS wins over an earlier run of the
 same block in another session."
-  (devops-test--with-transcript "devops:local /srv/app/"
+  (devops-test--with-transcript "devops:/srv/app/"
       (devops-test--run-text devops-test--run-a "echo two"
                              (concat devops-test--prompt "two\n") t)
-    (devops-test--with-transcript "devops:local /srv/app/<2>"
+    (devops-test--with-transcript "devops:/srv/app/<2>"
         (concat (devops-test--run-text devops-test--run-b "echo two" "" nil)
                 (devops-test--run-text "22222222-2222-3333-4444-555555555555"
                                        "echo three"
@@ -2149,11 +2163,11 @@ same block in another session."
                   "#+RESULTS:\n: " devops-test--run-b "\n\n"
                   "#+begin_src sh\necho three\n#+end_src\n")
         (let ((out (devops-scripting-block-output (current-buffer) 6)))
-          (should (equal (alist-get :session out) "devops:local /srv/app/<2>"))
+          (should (equal (alist-get :session out) "devops:/srv/app/<2>"))
           (should (eq (alist-get :status out) :running))
           (should (equal (alist-get :id out) devops-test--run-b)))
         (let ((out (devops-scripting-block-output (current-buffer) 12)))
-          (should (equal (alist-get :session out) "devops:local /srv/app/<2>"))
+          (should (equal (alist-get :session out) "devops:/srv/app/<2>"))
           (should (eq (alist-get :status out) :done))
           (should (equal (alist-get :output out) "three")))))))
 
@@ -2167,22 +2181,22 @@ same block in another session."
                (lambda (&rest _) (error "Prompted"))))
       (should-error (devops-scripting-block-output (current-buffer) 7) :type 'user-error)
       (should (equal (alist-get :session (devops-scripting-block-output (current-buffer) 7 "b"))
-                     "devops:b /srv/b/")))))
+                     "devops:/srv/b/")))))
 
 (ert-deftest devops-scripting-run-output-test ()
   "A run's output by its ID, whatever has become of its block."
-  (devops-test--with-transcript "devops:local /srv/app/" (devops-test--transcript)
-    (let ((out (devops-scripting-run-output "devops:local /srv/app/"
+  (devops-test--with-transcript "devops:/srv/app/" (devops-test--transcript)
+    (let ((out (devops-scripting-run-output "devops:/srv/app/"
                                             devops-test--run-a)))
-      (should (equal (alist-get :session out) "devops:local /srv/app/"))
+      (should (equal (alist-get :session out) "devops:/srv/app/"))
       (should (eq (alist-get :status out) :done))
       (should (equal (alist-get :id out) devops-test--run-a))
       (should (string-match-p "echo one\nls /nope\\'" (alist-get :input out)))
       (should (equal (alist-get :output out) "one\nls: /nope: No such file")))
     (should (eq (alist-get :status (devops-scripting-run-output
-                                    "devops:local /srv/app/" devops-test--run-b))
+                                    "devops:/srv/app/" devops-test--run-b))
                 :running))
-    (let ((out (devops-scripting-run-output "devops:local /srv/app/" "nope")))
+    (let ((out (devops-scripting-run-output "devops:/srv/app/" "nope")))
       (should (eq (alist-get :status out) :not-found))
       (should-not (alist-get :output out))))
   (should (eq (alist-get :status (devops-scripting-run-output
@@ -2204,7 +2218,7 @@ same block in another session."
   "A real async session is listed, idle once its block has finished."
   (let ((devops-enable-session-async t))
     (devops-test--with-local-target target
-      (let ((session (devops--session-name "local" target)))
+      (let ((session (devops--session-name target)))
         (unwind-protect
             (devops-test--with-org
                 (format (concat "#+TARGET: %s (local)\n\n"
@@ -2303,19 +2317,19 @@ The entry names the session from the target the run resolved."
           (let ((entries (devops-test--log-entries log)))
             (should (= 1 (length entries)))
             (should (equal (alist-get 'session (car entries))
-                           (devops--session-name "local" target)))))))))
+                           (devops--session-name target)))))))))
 
 (ert-deftest devops-execution-log-pool-session-test ()
   "A run is logged with the session of the pool it was sent to."
   (let ((devops-enable-session-async t))
     (devops-test--with-execution-log log
       (devops-test--with-sessions
-          `(("devops:local /srv/app/" ,(devops-test--sent devops-test--run-id)))
+          `(("devops:/srv/app/" ,(devops-test--sent devops-test--run-id)))
         (devops-test--with-session-org ""
           (devops-test--executor-params "sh")
           (should (equal (alist-get 'session
                                     (car (devops-test--log-entries log)))
-                         "devops:local /srv/app/<2>")))))))
+                         "devops:/srv/app/<2>")))))))
 
 (ert-deftest devops-execution-log-off-test ()
   "With `devops-execution-log' nil, a run writes no log."
@@ -2340,7 +2354,7 @@ The entry names the session from the target the run resolved."
   "An async run is logged when it starts and again when its result lands."
   (let ((devops-enable-session-async t))
     (devops-test--with-local-target target
-      (let ((session (devops--session-name "local" target)))
+      (let ((session (devops--session-name target)))
         (unwind-protect
             (devops-test--with-execution-log log
               (devops-test--with-org

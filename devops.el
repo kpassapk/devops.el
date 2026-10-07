@@ -256,15 +256,19 @@ for any value other than those in `devops--target-none-values'."
     (or (member (cdr cell) devops--target-none-values)
         (user-error "Unknown :target value %S (expected nil)" (cdr cell)))))
 
-(defun devops--session-name (tag target &optional slot)
-  "Return the name of session SLOT in the pool for TAG and TARGET.
-SLOT counts from 1, the default.  Slot 1 is \"devops:TAG TARGET\" and
-slot N adds \"<N>\", the way Emacs names a second buffer.  A relative
-TARGET is expanded against `default-directory' first, so org files in
-different directories that share a relative #+TARGET do not share a
-session."
-  (format "devops:%s %s%s" tag
-          (if (file-name-absolute-p target)
+(defun devops--session-name (target &optional slot)
+  "Return the name of session SLOT in the pool for TARGET.
+SLOT counts from 1, the default.  Slot 1 is \"devops:TARGET\" and slot N
+adds \"<N>\", the way Emacs names a second buffer.
+
+The name is the target alone, not its tag: a shell is its machine and
+its directory, so tags and org files that name the same target share a
+pool.  A local TARGET is expanded against `default-directory', so that
+\"..\" in two directories names two pools, and \"~/src\" and its
+expansion one.  A TRAMP target is left as written, since expanding it
+can open a connection."
+  (format "devops:%s%s"
+          (if (tramp-tramp-file-p target)
               target
             (file-name-as-directory (expand-file-name target)))
           (if (and slot (> slot 1)) (format "<%d>" slot) "")))
@@ -293,20 +297,20 @@ latest run counts: a block is never sent to a busy session."
                         "\\(?:[^']\\|$\\)")
                 nil t)))))))
 
-(defun devops--pool-session (tag target)
-  "Return the name of an idle session in the pool for TAG and TARGET.
+(defun devops--pool-session (target)
+  "Return the name of an idle session in the pool for TARGET.
 Slots are tried in order.  Signal a `user-error' when all
 `devops-session-pool-size' of them are busy."
   (or (cl-loop for slot from 1 to devops-session-pool-size
-               for name = (devops--session-name tag target slot)
+               for name = (devops--session-name target slot)
                unless (devops--session-busy-p name) return name)
       (user-error "All %d sessions for %s are busy; wait for one, \
 or give the block its own :session"
-                  devops-session-pool-size tag)))
+                  devops-session-pool-size target)))
 
-(defun devops--pool-buffers (tag target)
-  "Return the live session buffers in the pool for TAG and TARGET, by slot."
-  (let ((re (concat "\\`" (regexp-quote (devops--session-name tag target))
+(defun devops--pool-buffers (target)
+  "Return the live session buffers in the pool for TARGET, by slot."
+  (let ((re (concat "\\`" (regexp-quote (devops--session-name target))
                     "\\(?:<[0-9]+>\\)?\\'")))
     (sort (seq-filter (lambda (buf) (string-match-p re (buffer-name buf)))
                       (buffer-list))
@@ -354,10 +358,10 @@ LANG is the block's language; PARAMS and BLOCK-PARAMS are as in
                (not (bound-and-true-p
                      org-babel-shell-results-defaults-to-output)))))))
 
-(defun devops--async-session-cells (params block-params lang tag target)
+(defun devops--async-session-cells (params block-params lang target)
   "Return the :session and :async header cells to inject, or nil.
 PARAMS, BLOCK-PARAMS and LANG are as in `devops--session-declared-p';
-TAG and TARGET name the heading's target."
+TARGET is the heading's target."
   (when (and devops-enable-session-async
              (not devops--inhibit-async)
              (member lang devops-async-session-languages)
@@ -367,7 +371,7 @@ TAG and TARGET name the heading's target."
       (unless (and declared (equal session "none"))
         (append
          (unless declared
-           (list (cons :session (devops--pool-session tag target))))
+           (list (cons :session (devops--pool-session target))))
          (unless (devops--header-cell :async params block-params)
            (list (cons :async "yes"))))))))
 
@@ -412,7 +416,7 @@ is the target, and :session and :async are injected as decision 2 says."
             (append (cons (cons :dir (cdr pair))
                           (devops--async-session-cells
                            params block-params (nth 0 block-info)
-                           (car pair) (cdr pair)))
+                           (cdr pair)))
                     params))
            ;; Called with fewer than three arguments -- the interactive
            ;; case passes none -- PARAMS still needs a slot to land in.
@@ -433,7 +437,7 @@ the run, with the session it gets bound to `devops--block-session'."
             (let ((session (cdr (assq :session (nth 2 args)))))
               (if (and session (not (equal session "none")))
                   session
-                (devops--session-name (car pair) (cdr pair)))))))
+                (devops--session-name (cdr pair)))))))
     (apply fn args)))
 
 (defun devops--resolve-ref-sync (fn &rest args)
@@ -568,8 +572,8 @@ NAME is the first session's name, and BUFFERS the live sessions in the
 pool.  Signal a `user-error' if no tag on the heading names a target."
   (let ((pair (or (devops--heading-target)
                   (user-error "No #+TARGET match for tags on current heading"))))
-    (cons (devops--session-name (car pair) (cdr pair))
-          (devops--pool-buffers (car pair) (cdr pair)))))
+    (cons (devops--session-name (cdr pair))
+          (devops--pool-buffers (cdr pair)))))
 
 ;;;###autoload
 (defun devops-goto-session ()
