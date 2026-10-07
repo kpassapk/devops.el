@@ -7,14 +7,17 @@ there (`:dir` is injected) or tangle there (`:tangle` paths are redirected).
 
 ## Layout
 
-| File | What it is |
-|---|---|
-| `devops.el` | Core: `#+TARGET` parsing, `:dir`/`:session` injection, `devops-tangle`, terminal DWIM |
-| `devops-drift.el` | `devops-drift`: tangles to a temp dir and compares with each target |
-| `devops-lob.el` | Loads a project's `tools.org` into the Library of Babel |
-| `devops-test.el` | The whole ERT suite |
-| `decisions/` | Decision records (`NN-topic.org`). Read the relevant one before you change a design it covers. |
-| `examples/` | Org files that show each feature. Keep them in step with behavior. |
+| File                  | Contents                                                                                       |
+|-----------------------|------------------------------------------------------------------------------------------------|
+| `devops.el`           | Core: `#+TARGET` parsing, `:dir`/`:session` injection, `devops-tangle`, terminal DWIM          |
+| `devops-drift.el`     | `devops-drift`: tangles to a temp dir and compares with each target                            |
+| `devops-lob.el`       | Loads a project's `tools.org` into the Library of Babel                                        |
+| `devops-scripting.el` | Noninteractive functions for scripts over `emacsclient`                                        |
+| `devops-log.el`       | Writes `devops-execution-log`: one JSON line per block run                                     |
+| `skills/`             | Agent skills                                                                                   |
+| `devops-test.el`      | The whole ERT suite                                                                            |
+| `decisions/`          | Decision records (`NN-topic.org`). Read the relevant one before you change a design it covers. |
+| `examples/`           | Org files that show each feature. Keep them in step with behavior.                             |
 
 ## Commands
 
@@ -51,14 +54,11 @@ in preference to the edited source.
 the buffer: `save-buffer` is removed from `org-babel-pre-tangle-hook` for
 the duration.
 
-Paths are redirected at the data level. A `:filter-return` advice on
-`org-babel-tangle-collect-blocks` rewrites each block's destination file in
-org's write plan. `devops--tangle-subtree` adds it only while it tangles,
-with `devops--tangle-redirect` bound. `devops--tangle-destination` (for tangling) and
-`devops-drift--destination` (for the drift check) are pure functions that
-decide each destination. Test new path rules there. Org still does the
-writing itself (`:mkdirp`, `:shebang`, `:tangle-mode`). The background is in
-`decisions/01-tangling.org`.
+Paths are redirected at the data level. `devops--tangle-destination`
+(for tangling) and `devops-drift--destination` (for the drift check)
+are pure functions that decide each destination. Test new path rules
+there. Org still does the writing itself (`:mkdirp`, `:shebang`,
+`:tangle-mode`).
 
 ## Conventions
 
@@ -67,19 +67,6 @@ writing itself (`:mkdirp`, `:shebang`, `:tangle-mode`). The background is in
   does.
 - **Delete dead code.** When code becomes unused, remove it and its tests.
   Don't shim or deprecate.
-- **Docstrings explain why.** The existing style is full sentences that
-  give the reason and the edge case, e.g. why a path is expanded, or what
-  goes wrong without a step. Match it. checkdoc must stay clean (quote
-  symbols as `` `sym' ``, first line a complete sentence). The package is
-  headed for MELPA.
-- **No top-level advice.** Execution advice is added by the global
-  `devops-mode`. Advice that only matters inside a devops command is added
-  and removed around that command. `devops-unload-function` turns the mode
-  off. MELPA's melpazoid flags any `(advice-add` at column 0.
-- **Advice changes as little as it can.** An advice on an org function
-  should change only what devops needs. When that only matters inside a
-  devops command, make it a no-op unless a dynamic variable is bound, as
-  `devops--redirect-tangle-plan` does with `devops--tangle-redirect`.
 - **Scripted evaluation is synchronous.** Anything that reads a block's
   result (tangling, drift, `:var` and noweb references) runs inside
   `devops-with-sync`, because under `:async` the result is a placeholder

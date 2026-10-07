@@ -368,34 +368,70 @@ TARGET is the heading's target."
          (unless (devops--header-cell :async params block-params)
            (list (cons :async "yes"))))))))
 
-(defun devops--inject-header-args-from-tags (args)
-  "Advise `org-babel-execute-src-block' to inject :dir from #+TARGET tags.
-ARGS is its whole argument list, of which only PARAMS, the third, is
-rewritten."
-  (let* ((info (nth 1 args))
-         (params (nth 2 args))
-         (block-info (devops--block-info info))
-         (block-params (nth 2 block-info))
-         (pair (unless (or (devops--target-opted-out-p params block-params)
-                           (devops--header-cell :dir params block-params))
-                 (devops--heading-target))))
-    (if (not pair)
-        args
-      (let ((params
-             ;; Ours first: within one alist `org-babel-merge-params'
-             ;; lets a later pair overwrite an earlier one, so an
-             ;; explicit PARAMS from the caller still wins.
-             (append (cons (cons :dir (cdr pair))
-                           (devops--async-session-cells
-                            params block-params (nth 0 block-info)
-                            (cdr pair)))
-                     params))
-            ;; Called with fewer than three arguments -- the interactive
-            ;; case passes none -- PARAMS still needs a slot to land in.
-            ;; Pad, never truncate: an argument org adds later travels on
-            ;; untouched.
-            (args (append args (make-list (max 0 (- 3 (length args))) nil))))
-        (append (list (nth 0 args) (nth 1 args) params) (nthcdr 3 args))))))
+(defvar devops--block-target nil
+  "The (TAG . TARGET) of the src block being executed, or nil.
+Bound by `devops--execute-on-target' for the run, so that
+`org-babel-after-execute-hook' knows where the block ran.  Resolving
+the target there again would run a dynamic target's block again.")
+
+(defvar devops--block-session nil
+  "The name of the session the src block being executed was sent to.
+Bound by `devops--execute-on-target' for the run, alongside
+`devops--block-target': a pool has several sessions, and only the
+injected header says which one the block got.  For a block run with no
+session, the target's first.")
+
+(defun devops--execution-target (args)
+  "Return the (TAG . TARGET) a run of `org-babel-execute-src-block' gets.
+ARGS is its whole argument list.  Nil when the block opted out with
+`:target nil' or names its own `:dir', or its heading has no target."
+  (let* ((params (nth 2 args))
+         (block-params (nth 2 (devops--block-info (nth 1 args)))))
+    (unless (or (devops--target-opted-out-p params block-params)
+                (devops--header-cell :dir params block-params))
+      (devops--heading-target))))
+
+(defun devops--inject-header-args (args pair)
+  "Return ARGS, for `org-babel-execute-src-block', set to run on PAIR.
+PAIR is the (TAG . TARGET) from `devops--execution-target', or nil to
+leave ARGS alone.  Only PARAMS, the third argument, is rewritten: :dir
+is the target, and :session and :async are injected as decision 2 says."
+  (if (not pair)
+      args
+    (let* ((info (nth 1 args))
+           (params (nth 2 args))
+           (block-info (devops--block-info info))
+           (block-params (nth 2 block-info))
+           (params
+            ;; Ours first: within one alist `org-babel-merge-params'
+            ;; lets a later pair overwrite an earlier one, so an
+            ;; explicit PARAMS from the caller still wins.
+            (append (cons (cons :dir (cdr pair))
+                          (devops--async-session-cells
+                           params block-params (nth 0 block-info)
+                           (cdr pair)))
+                    params))
+           ;; Called with fewer than three arguments -- the interactive
+           ;; case passes none -- PARAMS still needs a slot to land in.
+           ;; Pad, never truncate: an argument org adds later travels on
+           ;; untouched.
+           (args (append args (make-list (max 0 (- 3 (length args))) nil))))
+      (append (list (nth 0 args) (nth 1 args) params) (nthcdr 3 args)))))
+
+(defun devops--execute-on-target (fn &rest args)
+  "Advise `org-babel-execute-src-block' (FN with ARGS) to run on the target.
+The heading's #+TARGET is resolved once, injected by
+`devops--inject-header-args', and bound to `devops--block-target' for
+the run, with the session it gets bound to `devops--block-session'."
+  (let* ((devops--block-target (devops--execution-target args))
+         (args (devops--inject-header-args args devops--block-target))
+         (devops--block-session
+          (when-let* ((pair devops--block-target))
+            (let ((session (cdr (assq :session (nth 2 args)))))
+              (if (and session (not (equal session "none")))
+                  session
+                (devops--session-name (cdr pair)))))))
+    (apply fn args)))
 
 (defun devops--resolve-ref-sync (fn &rest args)
   "Run `org-babel-ref-resolve' (FN with ARGS) under `devops-with-sync'."
@@ -403,20 +439,125 @@ rewritten."
     (apply fn args)))
 
 
+;;; Optional features
+;;
+;; `devops-mode' installs the hooks for these always; each checks its
+;; variable when it runs, so setting one takes effect with the mode
+;; already on, and the file behind it loads only once it is used.
+
+(defcustom devops-lob-auto-load nil
+  "When non-nil, opening a file in a project loads its tools.org.
+The named src blocks of tools.org at the project root go into the
+Library of Babel; see `devops-lob-load-project-tools'.  Remote files
+are skipped.  Takes effect while `devops-mode' is on."
+  :type 'boolean
+  :group 'devops)
+
+(defcustom devops-execution-log nil
+  "File to append a JSON line to per user action, or nil for none.
+An agent can follow the file with `tail -F' and learn what the user did
+without being told.  A line is written when a block runs, for an async
+block again when its result arrives, and when `devops-tangle' or
+`devops-drift' runs.  Each has `event' (\"execute\", \"result\",
+\"tangle\" or \"drift\"), `time', `file' and `buffer'; see
+devops-log.el for the rest.  No line holds output: the agent reads it
+with `devops-scripting-block-output'.  Takes effect while `devops-mode'
+is on."
+  :type '(choice (const :tag "Off" nil) file)
+  :group 'devops)
+
+(autoload 'devops--lob-maybe-load-on-find-file "devops-lob")
+(autoload 'devops-log-block "devops-log")
+(autoload 'devops-log-command "devops-log")
+
+(defun devops--maybe-load-lob ()
+  "Load the project's tools.org, for `find-file-hook'.
+Does nothing unless `devops-lob-auto-load' is set."
+  (when devops-lob-auto-load
+    (devops--lob-maybe-load-on-find-file)))
+
+(defun devops--log (event pos session)
+  "Log EVENT on the src block at POS, run in SESSION, to the log.
+SESSION is the session buffer's name, or nil for a block that ran on
+no target.  Scripted evaluation -- a reference, a dynamic target,
+tangling -- runs blocks under `devops-with-sync', and those runs are not
+the user's, so they are not logged."
+  (when (and devops-execution-log (not devops--inhibit-async))
+    (devops-log-block event pos session)))
+
+(defvar devops-mode)
+
+(defun devops--logged (event all fn fields)
+  "Call FN, and log EVENT with FIELDS of its value, or with its error.
+For a command the user runs, such as `devops-tangle'.  ALL is the
+command's prefix argument, as `devops-log-command' takes it.  FIELDS is
+a function of FN's value that returns an alist.  Return FN's value."
+  (if (not (and devops-mode devops-execution-log))
+      (funcall fn)
+    (let ((value (condition-case err
+                     (save-excursion (funcall fn))
+                   (error
+                    (devops-log-command
+                     event all `((:error . ,(error-message-string err))))
+                    (signal (car err) (cdr err))))))
+      (devops-log-command event all (funcall fields value))
+      value)))
+
+(defun devops--log-execution ()
+  "Log the src block just executed, for `org-babel-after-execute-hook'.
+An async block has only started: its status is `:running', and its
+result is logged again by `devops--log-async-result'."
+  (when org-babel-current-src-block-location
+    (devops--log "execute" org-babel-current-src-block-location
+                 devops--block-session)))
+
+(defvar devops--async-result nil
+  "The session's name while ob-comint inserts the result of an async run.
+Bound by `devops--during-async-filter', so that
+`devops--log-async-result' logs only that insertion, not every result
+a block inserts, and names the session without resolving the target.")
+
+(defun devops--during-async-filter (fn &rest args)
+  "Run FN, `org-babel-comint-async-filter', with ARGS, logging results.
+ob-comint runs no hook when an async result arrives; it calls
+`org-babel-insert-result' from this filter, with point on the block."
+  (let ((devops--async-result (buffer-name)))
+    (apply fn args)))
+
+(defun devops--log-async-result (fn &rest args)
+  "Run FN, `org-babel-insert-result', with ARGS; log an async result.
+Point is on the block before FN runs, which may move it."
+  (let ((pos (point)))
+    (prog1 (apply fn args)
+      (when-let* ((session devops--async-result))
+        (let ((devops--async-result nil))
+          (devops--log "result" pos session))))))
+
 ;;;###autoload
 (define-minor-mode devops-mode
-  "Make org-babel blocks run on their heading's #+TARGET."
+  "Make org-babel blocks run on their heading's #+TARGET.
+Also does what `devops-lob-auto-load' and `devops-execution-log' ask."
   :global t
   :group 'devops
   (if devops-mode
       (progn
-        (advice-add 'org-babel-execute-src-block :filter-args
-                    #'devops--inject-header-args-from-tags)
+        (advice-add 'org-babel-execute-src-block :around
+                    #'devops--execute-on-target)
         (advice-add 'org-babel-ref-resolve :around
-                    #'devops--resolve-ref-sync))
-    (advice-remove 'org-babel-execute-src-block
-                   #'devops--inject-header-args-from-tags)
-    (advice-remove 'org-babel-ref-resolve #'devops--resolve-ref-sync)))
+                    #'devops--resolve-ref-sync)
+        (add-hook 'find-file-hook #'devops--maybe-load-lob)
+        (add-hook 'org-babel-after-execute-hook #'devops--log-execution)
+        (advice-add 'org-babel-comint-async-filter :around
+                    #'devops--during-async-filter)
+        (advice-add 'org-babel-insert-result :around
+                    #'devops--log-async-result))
+    (advice-remove 'org-babel-execute-src-block #'devops--execute-on-target)
+    (advice-remove 'org-babel-ref-resolve #'devops--resolve-ref-sync)
+    (remove-hook 'find-file-hook #'devops--maybe-load-lob)
+    (remove-hook 'org-babel-after-execute-hook #'devops--log-execution)
+    (advice-remove 'org-babel-comint-async-filter
+                   #'devops--during-async-filter)
+    (advice-remove 'org-babel-insert-result #'devops--log-async-result)))
 
 (defun devops--heading-sessions ()
   "Return (NAME . BUFFERS) for the current heading's target.
@@ -656,8 +797,19 @@ target tags."
   (interactive "P")
   (message "%s"
            (devops--tangle-report
-            (devops--tangle-spec-execute
-             (current-buffer) (devops--tangle-spec arg)))))
+            (devops--logged
+             "tangle" arg
+             (lambda ()
+               (devops--tangle-spec-execute
+                (current-buffer) (devops--tangle-spec arg)))
+             (lambda (results)
+               `((:targets
+                  . ,(vconcat
+                      (mapcar (lambda (r)
+                                `((:tag . ,(nth 0 r))
+                                  (:target . ,(nth 1 r))
+                                  (:files . ,(nth 2 r))))
+                              results)))))))))
 
 (defun devops-tangle-headline (source-buf headline)
   "Tangle the subtree titled HEADLINE in SOURCE-BUF, noninteractively.

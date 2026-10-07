@@ -26,6 +26,19 @@ Or straight from GitHub:
   :config (devops-mode 1))
 ```
 
+Enable optional features:
+
+```
+(use-package devops
+  :ensure t
+  :custom
+  (devops-enable-session-async t)    ; async sessions (recommended), see below
+  (devops-lob-auto-load t)           ; load a project's tools.org
+  (devops-execution-log              ; log runs, tangles, drift checks
+   "~/.cache/devops/executions.jsonl")
+  :config (devops-mode 1))
+```
+
 ## Why?
 
 Org mode, built into emacs, provides support for literate programming via Org Babel.  Org mode can also "tangle" its source code blocks, pushing them out as individual files in the file system.  This is a pretty good base for [literate devops](https://howardism.org/Technical/Emacs/literate-devops.html), especially if we use some little-known features of org mode:
@@ -256,11 +269,7 @@ keep it cheap (to run) and/or cache it.
 `devops-drift` shows a `*Drift Report*` buffer, telling you whtether code blocks and their 
 tangle targets have identical content. 
 
-```
-  ok       server1   /ssh:example1.com:~/foo.txt
-  DRIFT    server1   /ssh:example1.com:~/app.conf
-  MISSING  server2   /ssh:example2.com:~/app.conf
-```
+![drift](./docs/images/devops-drift.gif)
 
 The following keys are active in the diff report buffer:
 
@@ -270,9 +279,6 @@ The following keys are active in the diff report buffer:
 | `=`       | ediff the target against the tangled file |
 | `d`       | diff them                                 |
 | `g`       | re-run the check                          |
-
-There are also noninteractive variants - `devops-drift-{all|headline|custom-id}`
-for scripting.
 
 ## Shell async sessions
 
@@ -286,6 +292,8 @@ In recent org mode versions (Org 9.7+), `ob-shell` provides a built-in
 async mechanism. Source blocks with `:session foo :async yes` will
 print a [UUID placeholder][ob-shell-uuid]. Once the background command finishes, the
 placeholder gets replaced with the output.
+
+![ob-shell-async](./docs/images/ob-shell-async.gif)
 
 [ob-shell-uuid]: https://github.com/emacs-straight/org/blob/master/ob-shell.el#L381C32-L381C43
 
@@ -323,14 +331,8 @@ target share them.
 
 ![pool](./docs/images/devops-async-pool.gif)
 
-When they are all busy, running another block is an error.
-
-The sessions in a pool share nothing, so don't write blocks that rely on
-a `cd` or `export` from an earlier block. A block with its own
-`:session` header runs in that session, outside the pool.
-
-`M-x devops-goto-session` pops to a session of the heading's target, and
-`M-x devops-restart-session` kills all of them.
+`M-x devops-goto-session` pops to the session buffer
+`M-x devops-restart-session` kills all sessions for this target
 
 Caveats:
 
@@ -352,16 +354,10 @@ shell. The source block content is copied to the clipboard, so you can do
 
 Any project with a `tools.org` at its root can expose named org-babel blocks as reusable tools. `devops-lob` loads and unloads these per-project.
 
-With `devops-lob-auto-mode` enabled, opening any file in a project that has `tools.org` automatically loads its named blocks into the org-babel Library of Babel.
-
-Setup:
+Set `devops-lob-auto-load`, and while `devops-mode` is on, opening any file in a project that has `tools.org` loads its named blocks into the org-babel Library of Babel.
 
 ```elisp
-(use-package devops
-  :ensure t
-  :config
-  (devops-mode 1)
-  (devops-lob-auto-mode 1))
+(setq devops-lob-auto-load t)
 ```
 
 ### tools.org commands
@@ -372,3 +368,32 @@ Setup:
 | `devops-lob-unload-project-tools` | Remove current project's tools from LOB           |
 | `devops-lob-reload-project-tools` | Unload then reload (pick up edits to `tools.org`) |
 | `devops-lob-unload-all`           | Remove all devops-tracked LOB entries             |
+
+## Scripting and Agents
+
+`devops-scripting.el` is for noninteractive use, usually through 
+`emacsclient --eval`.
+
+```
+emacsclient --eval '(progn (require (quote devops-scripting)) ...)'
+```
+
+This is great for automation, and also for agents. The basic idea is this:
+
+1. An agent writes source code blocks to a file.
+2. You execute those source blocks.
+3. The agent gets notified by tailing the execution log.
+  - If there are no errors, agent continues advising
+  - If there are errors, agent helps fix them and print new source code blocks.
+4. Repeat.
+
+This way you are in control of what to execute, and the agent is limited
+to a supporting / advisory role.
+
+To enable this kind of loop, set `devops-execution-log` to a file and point your agent
+to the `devops-el` skill in `skills/`. For Claude Code, link it into your
+skills directory:
+
+```
+ln -s "$PWD/skills/devops-el" ~/.claude/skills/devops-el
+```

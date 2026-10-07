@@ -1,0 +1,9 @@
+{
+  "name": "devops-el",
+  "description": "Skills for driving devops.el from a coding agent",
+  "version": "0.1.0",
+  "author": {
+    "name": "Kyle S Passarelli"
+  },
+  "repository": "https://github.com/kpassapk/devops.el"
+}

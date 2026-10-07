@@ -232,6 +232,13 @@ never sees, and the diff is what they were good for."
                                             (plist-get entry :path)
                                             (plist-get entry :tag)))))))
 
+(defun devops-drift--log-entry (entry)
+  "Return drift ENTRY as `devops-execution-log' records it, an alist.
+No diff: the log says what drifted, and `devops-drift-headline' or
+`devops-drift-all' says how."
+  (mapcar (lambda (key) (cons key (plist-get entry key)))
+          '(:status :tag :path :remote :detail)))
+
 (defun devops-drift--entries (source-buf &optional all)
   "Drift-check SOURCE-BUF and return entry alists, temp tree removed.
 Point selects the heading unless ALL is non-nil, exactly as in
@@ -498,7 +505,12 @@ its #+begin_src line (`devops-drift-clear-indicators' removes them).
 With prefix ARG, check every target-tagged heading in the buffer."
   (interactive "P")
   (let* ((source (current-buffer))
-         (result (devops-drift--check source arg))
+         (result (devops--logged
+                  "drift" arg
+                  (lambda () (devops-drift--check source arg))
+                  (lambda (result)
+                    `((:files . ,(vconcat (mapcar #'devops-drift--log-entry
+                                                  (cdr result))))))))
          (buf (get-buffer-create "*Drift Report*")))
     (devops-drift--decorate-source source (cdr result))
     (with-current-buffer buf

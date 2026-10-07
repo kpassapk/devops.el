@@ -122,26 +122,23 @@ devops.el:500: Documentation strings should not start or end with whitespace
 - Watched: 29
 #+end_example
 
-#+begin_src elisp
-  (set-frame-size
-   (selected-frame) 1224 516 t)
+
+#+begin_src sh :dir ~/Movies
+  ./mov2gif.sh devops-drift.mov
+#+end_src
+
+#+RESULTS:
+: -rw-r--r--@ 1 kyle  staff   1.2M Oct  6 10:15 devops-drift.gif
+
+#+begin_src sh :dir ~/Movies
+  cp devops-drift.gif ~/src/github.com/kpassapk/devops.el/docs/images/
 #+end_src
 
 #+RESULTS:
 
-
-* Parallel async                                                    :project:
-
 #+begin_src sh
-sleep 4 && echo hi
+  sleep 10 && echo hi
 #+end_src
 
 #+RESULTS:
 : hi
-
-#+begin_src sh
-sleep 4 && echo ho
-#+end_src
-
-#+RESULTS:
-: ho
