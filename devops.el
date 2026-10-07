@@ -251,8 +251,14 @@ for any value other than those in `devops--target-none-values'."
         (user-error "Unknown :target value %S (expected nil)" (cdr cell)))))
 
 (defun devops--session-name (tag target)
-  "Return the session name for TAG and TARGET."
-  (funcall devops-session-name-function tag target))
+  "Return the session name for TAG and TARGET.
+A relative TARGET is expanded against `default-directory' first, so
+org files in different directories that share a relative #+TARGET do
+not share a session."
+  (funcall devops-session-name-function tag
+           (if (file-name-absolute-p target)
+               target
+             (file-name-as-directory (expand-file-name target)))))
 
 (defun devops--user-header-args (lang)
   "Return the header arguments written on the src block at point.

@@ -933,6 +933,23 @@ Return the header arguments the executor was handed, so an injected
       (should (equal (cdr (assq :session (devops-test--executor-params "sh")))
                      "local@/srv/app/")))))
 
+(ert-deftest devops-session-name-relative-target-test ()
+  "A relative target names its session by the directory it expands to.
+Two org files with the same relative #+TARGET in different directories
+get different sessions; absolute, `~' and TRAMP targets are left as is."
+  (let ((default-directory "/srv/one/app/"))
+    (should (equal (devops--session-name "project" "..")
+                   "devops:project /srv/one/"))
+    (should (equal (devops--session-name "project" ".")
+                   "devops:project /srv/one/app/"))
+    (should (equal (devops--session-name "home" "~/src")
+                   "devops:home ~/src"))
+    (should (equal (devops--session-name "server" "/ssh:app@host:")
+                   "devops:server /ssh:app@host:")))
+  (let ((default-directory "/srv/two/app/"))
+    (should (equal (devops--session-name "project" "..")
+                   "devops:project /srv/two/"))))
+
 (ert-deftest devops-session-async-explicit-session-wins-test ()
   "A `:session' on the block is not overwritten by the tag's session."
   (let ((devops-enable-session-async t))
