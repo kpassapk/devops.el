@@ -1,13 +1,13 @@
 #+PROPERTY: header-args:sh :results output
-#+TARGET: /ssh:example1.com: (server1)
-#+TARGET: /ssh:example2.com: (server2)
+#+TARGET: server1 /ssh:example1.com:
+#+TARGET: server2 /ssh:example2.com:
 #+TITLE: Running server commands
 
 =devops.el= helps you run commands on one or more named targets by declaring them at the the top of the file.
 
 #+begin_example
-#+TARGET: /ssh:example1.com: (server1)
-#+TARGET: /ssh:example2.com: (server2)
+#+TARGET: server1 /ssh:example1.com:
+#+TARGET: server2 /ssh:example2.com:
 #+end_example
 
 Normally, org-babel runs commands on servers whenever the =:dir= header argument

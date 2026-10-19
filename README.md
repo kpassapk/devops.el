@@ -136,18 +136,21 @@ In general, it makes the whole experience of using org mode notebooks for infrsa
 This package works with "targets" defined at the top of the file, which also appear in heading tags:
 
 ```org
-#+TARGET: /ssh:example1.com: (server1)
-#+TARGET: /ssh:example2.com: (server2)
+#+TARGET: server1 /ssh:example1.com:
+#+TARGET: server2 /ssh:example2.com:
 
 * Do something on server1               :server1:
 * Do something on server2               :server2:
 ```
 
+Each `#+TARGET` names a tag and then its target, like org's `#+LINK`. The older
+form, `#+TARGET: /ssh:example1.com: (server1)`, still works.
+
 Source code blocks under a heading tag that matches a target (a "target tag") execute in on the server, instead of locally:
 
 ```org
-#+TARGET: /ssh:example1.com: (server1)
-#+TARGET: /ssh:example2.com: (server2)
+#+TARGET: server1 /ssh:example1.com:
+#+TARGET: server2 /ssh:example2.com:
 
 * Do something on server1               :server1:
 
@@ -214,7 +217,7 @@ processing the output of the code block.
 For example, let's say we have a `TARGET` that points to a Podman container in a server:
 
 ```org
-#+TARGET: /ssh:server.com|podman:my-container: (container)
+#+TARGET: container /ssh:server.com|podman:my-container:
 ```
 
 We can chain together a remote command and a local processing step as follows:
@@ -242,7 +245,7 @@ This will work even if the `jq` command is not installed in the container :)
 A `#+TARGET` value can be a noweb-style reference:
 
 ```org
-#+TARGET: <<server-target()>> (server)
+#+TARGET: server <<server-target()>>
 
 #+name: input-instance
 : app1
@@ -302,7 +305,7 @@ When `devops-enable-session-async` is enabled, blocks are executed as if you had
 the `session` and `async` headers yourself. For example,
 
 ```org
-#+TARGET: /ssh:example.com: (example)
+#+TARGET: example /ssh:example.com:
 
 * Update packages :example:
 

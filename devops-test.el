@@ -118,6 +118,31 @@ The directory is removed afterwards."
                   "<<t(INSTANCE=\"a b\")>> (server)")
                  '("server" . "<<t(INSTANCE=\"a b\")>>"))))
 
+(ert-deftest devops--parse-target-keyword-link-style-test ()
+  "A #+TARGET value may name its tag first, like #+LINK."
+  (should (equal (devops--parse-target-keyword "server1 /ssh:host1:")
+                 '("server1" . "/ssh:host1:")))
+  (should (equal (devops--parse-target-keyword "local /srv/app/")
+                 '("local" . "/srv/app/")))
+  (should (equal (devops--parse-target-keyword "server <<server-target()>>")
+                 '("server" . "<<server-target()>>")))
+  (should (equal (devops--parse-target-keyword
+                  "server <<t(INSTANCE=\"a b\")>>")
+                 '("server" . "<<t(INSTANCE=\"a b\")>>")))
+  ;; A relative directory in the old form is not read as a tag.
+  (should (equal (devops--parse-target-keyword "app (local)")
+                 '("local" . "app")))
+  (should (null (devops--parse-target-keyword "server"))))
+
+(ert-deftest devops-target-tag-alist-mixed-test ()
+  "Both #+TARGET forms may appear in one buffer."
+  (devops-test--with-org
+      (concat "#+TARGET: /srv/one/ (t1)\n"
+              "#+TARGET: t2 /srv/two/\n\n"
+              "* Heading\n")
+    (should (equal (devops-target-tag-alist)
+                   '(("t1" . "/srv/one/") ("t2" . "/srv/two/"))))))
+
 (ert-deftest devops-target-ref-test ()
   "`devops-target-ref' tells a reference from a literal target."
   (should (equal (devops-target-ref "<<server-target()>>") "server-target()"))

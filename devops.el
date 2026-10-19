@@ -27,8 +27,8 @@
 ;;
 ;; `devops.el' adds TARGET syntax to org-babel:
 ;;
-;;   #+TARGET: /ssh:web1.example.com: (web)
-;;   #+TARGET: /ssh:db1.example.com: (db)
+;;   #+TARGET: web /ssh:web1.example.com:
+;;   #+TARGET: db /ssh:db1.example.com:
 ;;
 ;;   * Check the web server                  :web:
 ;;   #+begin_src sh
@@ -138,15 +138,17 @@ reference, a dynamic target, tangling, a drift check.  Meaningful in
 `org-babel-after-execute-hook'."
   (not devops--inhibit-async))
 
-;; Maybe it would make sense to follow the #+LINK syntax?
-;; #+TARGET: server /ssh:example1.com:
-
 (defun devops--parse-target-keyword (value)
-  "Parse a #+TARGET VALUE like \"target1 (source)\" into (TAG . TARGET).
+  "Parse a #+TARGET VALUE into (TAG . TARGET).
+VALUE is \"TAG TARGET\", like org's #+LINK, or the older \"TARGET (TAG)\".
 TARGET is a directory, a TRAMP prefix, or a reference to a named block
 written in noweb's brackets, `<<NAME>>' or `<<NAME(ARGS)>>'."
-  (when (string-match "\\`\\(<<.*>>\\|[^ ]+\\) +(\\([^)]+\\))\\'" value)
-    (cons (match-string 2 value) (match-string 1 value))))
+  (let ((target "\\(<<.*>>\\|[^ ]+\\)"))
+    (cond
+     ((string-match (concat "\\`" target " +(\\([^)]+\\))\\'") value)
+      (cons (match-string 2 value) (match-string 1 value)))
+     ((string-match (concat "\\`\\([[:alnum:]_@#%]+\\) +" target "\\'") value)
+      (cons (match-string 1 value) (match-string 2 value))))))
 
 (defun devops--org-keywords (key)
   "Return all values for keyword KEY as a list."
