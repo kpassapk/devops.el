@@ -64,6 +64,8 @@ Each entry is (SCHEME . PLIST):
   :env    alist of (NAME . FORMAT); FORMAT's %s is ARG, and a value
           starting with ~/ is expanded.  Set in the session's
           environment when it starts.
+  :unset  list of NAMEs removed from the environment Emacs passes on,
+          the variables that would take precedence over :env.
   :allow  list of the ARGs a workbook may name, or nil for any ARG
           matching the name syntax.
   :dir    directory the blocks run in, relative to the project root,
@@ -73,15 +75,34 @@ Each entry is (SCHEME . PLIST):
   :group 'devops)
 
 (setq devops-target-schemes
-      '(("aws"  :env (("AWS_PROFILE" . "%s")) :allow ("dev" "staging" "prod"))
+      '(("aws"  :env (("AWS_PROFILE" . "%s"))
+                :unset ("AWS_ACCESS_KEY_ID" "AWS_SECRET_ACCESS_KEY"
+                        "AWS_SESSION_TOKEN" "AWS_DEFAULT_PROFILE")
+                :allow ("dev" "staging" "prod"))
         ("kube" :env (("KUBECONFIG" . "~/.kube/%s.yaml")))
-        ("gh"   :env (("GH_CONFIG_DIR" . "~/.config/gh-%s")))
-        ("pg"   :env (("PGSERVICE" . "%s")))))
+        ("gh"   :env (("GH_CONFIG_DIR" . "~/.config/gh-%s"))
+                :unset ("GH_TOKEN" "GITHUB_TOKEN" "GH_ENTERPRISE_TOKEN"
+                        "GITHUB_ENTERPRISE_TOKEN" "GH_HOST"))
+        ("pg"   :env (("PGSERVICE" . "%s"))
+                :unset ("PGHOST" "PGHOSTADDR" "PGPORT" "PGUSER"
+                        "PGPASSWORD" "PGDATABASE" "PGPASSFILE"))))
 #+end_src
 
 =:allow= is what makes this safe when someone else writes the workbook:
 =/aws:prod-admin:= fails with =user-error "Target prod: aws:prod-admin
 is not in :allow"= before anything runs.
+
+*=:unset= keeps the label true.* The scheme's =:env= goes in front of
+the environment Emacs inherited, and most CLIs let *other* variables
+win over the one a scheme sets: AWS's env keys over =AWS_PROFILE=,
+=GH_TOKEN= over =GH_CONFIG_DIR=, =PGHOST= / =PGUSER= over
+=PGSERVICE=. Emacs picks these up easily (=envrc=,
+=exec-path-from-shell=, a shell with an =aws sso= export). Without
+=:unset= the block runs as whatever identity those hold while the
+target, and devops.bb's prompt, say =AWS_PROFILE=prod=. Explicit per
+scheme, not guessed from a prefix: the precedence rules are each CLI's
+own. The example above is the README's and the docstring's; it is the
+part worth copying.
 
 ** Resolution
 
@@ -92,8 +113,10 @@ is not in :allow"= before anything runs.
 - Dynamic targets compose: =#+TARGET: prod <<assume-role()>>= may yield
   =/aws:prod:=, and is checked the same way after it resolves.
 - =devops-target-env TARGET= returns the expanded =(NAME . VALUE)=
-  alist, public, for a package that shows it (devops.bb's confirm
-  prompt: =target /aws:prod: · AWS_PROFILE=prod=).
+  alist, public, for a package that shows it, with each =:unset= NAME
+  as =(NAME . nil)= after the =:env= pairs (devops.bb's confirm prompt:
+  =target /aws:prod: · AWS_PROFILE=prod · unset AWS_ACCESS_KEY_ID …=).
+  A NAME in both =:env= and =:unset= is =:env='s.
 
 ** Sessions
 
@@ -106,7 +129,9 @@ is not in :allow"= before anything runs.
   keeps the directory it started in, so two projects using
   =/aws:prod:= must not share one.
 - =devops--execute-on-target= binds =process-environment= with the
-  scheme's =:env= in front around the run. A session's shell inherits
+  scheme's =:env= in front around the run, and each =:unset= NAME as a
+  bare ="NAME"= (no ===), which is how =process-environment= marks a
+  variable removed for the processes it starts. A session's shell inherits
   it when babel starts the session, so it holds for every block that
   session runs after: sh, bash, python, any session language. A live
   session keeps the environment it started with; after changing
@@ -123,12 +148,14 @@ is not in :allow"= before anything runs.
 - opens a *local* terminal (=devops--open-terminal-at-dir=), in the
   same directory blocks run in, never through the
   =file-remote-p= branch;
-- exports the scheme's =:env= first, then the block's =:var= env vars,
-  so a block's own variable wins as it does today;
+- =unset=s the scheme's =:unset= first, then exports its =:env=, then
+  the block's =:var= env vars, so a block's own variable wins as it
+  does today. The terminal's login shell may set them again from its
+  rc files; the README says so;
 - copies a shell block's body to the kill ring, as today.
 
-=devops--ghostty-command= takes the merged alist; only the caller
-changes.
+=devops--ghostty-command= takes the merged alist; a =(NAME . nil)=
+pair becomes =unset NAME=.
 
 ** Tangle and drift
 
@@ -154,6 +181,11 @@ it with a message.
 - =/aws:prod-admin:= with =:allow ("prod")= fails before a session
   starts; =/aws:../x:= fails the name syntax.
 - A dynamic target yielding =/aws:prod:= runs the same way.
+- With =AWS_ACCESS_KEY_ID= set in Emacs's =process-environment= and in
+  the scheme's =:unset=, a block's =env= does not show it, in a new
+  session and in a sync run; =devops-target-env= lists it as =(NAME
+  . nil)=; DWIM's command has =unset AWS_ACCESS_KEY_ID= before the
+  =export=s.
 - No TRAMP function sees a scheme name: a test with
   =tramp-file-name-handler= advised to signal never trips.
 - =devops-open-terminal-dwim= on the heading builds a local ghostty
@@ -175,6 +207,8 @@ it with a message.
 | =devops--session-name=            | scheme names as written                                   |
 | =devops--execute-on-target=       | bind =process-environment=                                |
 | =devops-open-terminal-dwim=       | local dir, merged env                                     |
+| =devops--ghostty-command=         | =(NAME . nil)= → =unset NAME=                             |
+| =:unset=                          | docstring, =devops-target-env=, =process-environment=, README |
 | tangle, drift, visit-file         | not-a-filesystem error                                    |
 | =devops-test.el=                  | the cases in Done when                                    |
 
@@ -222,6 +256,16 @@ make test 2>&1 | tail -n 5
 ** DONE 6. Shell DWIM
 ** DONE 7. Tangle, drift, visit-file refuse
 ** DONE 8. Example, README
-** TODO 9. devops.bb: show =devops-target-env= in the confirm prompt
+** TODO 9. =:unset=: environment, =devops-target-env=, DWIM, README
+Does Emacs's own environment hold any of them right now? Anything
+listed here is what a scheme block would inherit today.
+
+#+begin_src emacs-lisp :results output
+(dolist (e process-environment)
+  (when (string-match-p "\\`\\(AWS_\\|GH_\\|GITHUB_\\|PG\\|KUBECONFIG\\)" e)
+    (princ (format "%s\n" (car (split-string e "="))))))
+#+end_src
+
+** TODO 10. devops.bb: show =devops-target-env= in the confirm prompt
 In devops.bb's sandbox workbook; the resolved env is part of the
 fingerprint.
