@@ -1,0 +1,59 @@
+#+PROPERTY: header-args:sh :results output
+#+TARGET: prod /aws:prod:
+#+TARGET: dev /aws:dev:
+#+TITLE: Example 3: Scheme targets
+
+A target can be a credential instead of a place. =/aws:prod:= is not a
+TRAMP name: =aws= is a scheme you define in your Emacs, and a block
+under =:prod:= runs locally, at the project root, with the scheme's
+environment set.
+
+#+begin_src emacs-lisp :eval no
+(setq devops-target-schemes
+      '(("aws"  :env (("AWS_PROFILE" . "%s")) :allow ("dev" "prod"))
+        ("kube" :env (("KUBECONFIG" . "~/.kube/%s.yaml")))))
+#+end_src
+
+The org file only names the scheme and the profile. What =aws= means,
+and which profiles a file may name, is up to the operator: a target
+=/aws:prod-admin:= fails before anything runs, because it is not in
+=:allow=.
+
+* Who am I in prod?                                                    :prod:
+
+The body is left alone: pipes, loops and several CLIs work as usual.
+
+#+begin_src sh
+env | grep AWS_
+pwd
+aws sts get-caller-identity | jq -r .Arn
+#+end_src
+
+* Who am I in dev?                                                      :dev:
+
+With =devops-enable-session-async=, each target gets its own pool,
+=devops:/aws:dev:/path/to/project/=, and its sessions keep the
+environment they started with. After changing =devops-target-schemes=,
+run =devops-restart-session=.
+
+#+begin_src sh
+env | grep AWS_
+#+end_src
+
+* A terminal with the same credential                                  :prod:
+
+=devops-open-terminal-dwim= here opens a local terminal at the project
+root with =AWS_PROFILE=prod= exported, then the block's =:var=s.
+
+#+begin_src sh :var bucket="my-bucket"
+aws s3 ls "s3://$bucket"
+#+end_src
+
+* Tangling is refused                                                  :prod:
+
+A scheme target is not a filesystem: =devops-tangle= here is an error,
+and =devops-tangle-all= skips it.
+
+#+begin_src conf :tangle config.conf
+key = value
+#+end_src

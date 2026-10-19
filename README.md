@@ -349,6 +349,34 @@ Caveats:
 - Only works with `:results output`
 - Can break with fancy prompts. (You're not putting fancy prompts on your servers anyway, right??)
 
+## Scheme targets
+
+Modern devops workflows involve CLI tools as well as filesystem 
+targets. 
+
+`devops.el` allows you to define TRAMP-like `/SCHEME:ARG:` targets:
+
+```org
+#+TARGET: prod /aws:prod:
+
+* Who am I :prod:
+
+#+begin_src sh
+aws sts get-caller-identity | jq -r .Arn
+#+end_src
+```
+
+The package sets up the environment defined in to `devops-target-schemes`:
+
+```elisp
+(setq devops-target-schemes
+      '(("aws"  :env (("AWS_PROFILE" . "%s")) :allow ("dev" "prod"))
+        ("kube" :env (("KUBECONFIG" . "~/.kube/%s.yaml")))
+        ("gh"   :env (("GH_CONFIG_DIR" . "~/.config/gh-%s")))))
+```
+
+See [examples/3_schemes.org](examples/3_schemes.org).
+
 ## Terminal DWIM command
 
 I often like using a separate terminal to run most commands, instead of emacs.

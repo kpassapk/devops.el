@@ -67,6 +67,7 @@
 ;; Options:
 ;;
 ;; - `devops-enable-session-async'  run blocks in async session pool
+;; - `devops-target-schemes'        credentials a #+TARGET may name
 ;;
 ;; Please report issues at
 ;; https://github.com/kpassapk/devops.el/issues
@@ -78,6 +79,7 @@
 (require 'org)
 (require 'org-element)  ; org-element-property / org-element-at-point
 (require 'ob-tangle)    ; advised below: org-babel-tangle-collect-blocks
+(require 'project)      ; a scheme target runs at the project root
 (require 'tramp)  ; tramp-tramp-file-p / tramp-dissect-file-name etc. are used
                   ; below; autoloaded interactively but not under `emacs -Q'.
 
@@ -119,6 +121,28 @@ The sessions share nothing: a block must not rely on a `cd' or an
 (defcustom devops-async-session-languages '("sh" "bash" "shell" "python")
   "Languages that support `:session' + `:async' injected."
   :type '(repeat string)
+  :group 'devops)
+
+(defcustom devops-target-schemes nil
+  "Schemes a #+TARGET may name as /SCHEME:ARG:, for non-filesystem targets.
+A scheme target is a credential, not a place: blocks under its tag run
+locally with the scheme's environment.  It is set here, in Emacs, never
+in the org file.  Each entry is (SCHEME . PLIST):
+
+  :env    alist of (NAME . FORMAT); FORMAT's %s is ARG, and a value
+          starting with ~/ is expanded.  Set in the environment of the
+          block's process, so of a session when it starts.
+  :allow  list of the ARGs an org file may name, or nil for any ARG
+          matching the name syntax.
+  :dir    directory the blocks run in, relative to the project root,
+          or nil for the project root itself.  Outside a project the
+          root is the org file's directory.
+
+For example:
+
+  ((\"aws\"  :env ((\"AWS_PROFILE\" . \"%s\")) :allow (\"dev\" \"prod\"))
+   (\"kube\" :env ((\"KUBECONFIG\" . \"~/.kube/%s.yaml\"))))"
+  :type '(alist :key-type string :value-type plist)
   :group 'devops)
 
 (defvar devops--inhibit-async nil
@@ -196,11 +220,68 @@ value."
       (user-error "Target %s: %s must yield one line, got %S" tag ref value))
     value))
 
+(defun devops-target-scheme (target &optional tag)
+  "Return (SCHEME ARG PLIST) when TARGET is /SCHEME:ARG:, or nil.
+SCHEME is a key of `devops-target-schemes' and PLIST its entry.  A
+TARGET whose scheme is not in the map is nil, left to TRAMP.  Signal a
+`user-error' when ARG is not a name, `[[:alnum:]][[:alnum:]_-]*', or not
+in the scheme's :allow.  TAG, when given, names the target in the error.
+
+Only string matching: a scheme name must never reach a file name
+function, whose TRAMP handler would take SCHEME for a method."
+  (when (string-match "\\`/\\([^/:|]+\\):" target)
+    (when-let* ((entry (assoc (match-string 1 target) devops-target-schemes)))
+      (let ((label (if tag (format "Target %s: " tag) ""))
+            (scheme (car entry))
+            (plist (cdr entry)))
+        (unless (string-match
+                 "\\`/[^/:|]+:\\([[:alnum:]][[:alnum:]_-]*\\):\\'" target)
+          (user-error "%s%s is not /%s:NAME:" label target scheme))
+        (let ((arg (match-string 1 target))
+              (allow (plist-get plist :allow)))
+          (when (and allow (not (member arg allow)))
+            (user-error "%s%s:%s is not in :allow" label scheme arg))
+          (list scheme arg plist))))))
+
+(defun devops-target-env (target)
+  "Return the (NAME . VALUE) environment of TARGET, a scheme target, or nil.
+The scheme's :env with ARG put in and a leading ~/ expanded."
+  (pcase (devops-target-scheme target)
+    (`(,_ ,arg ,plist)
+     (mapcar (lambda (pair)
+               (let ((value (format (cdr pair) arg)))
+                 (cons (car pair)
+                       (if (string-prefix-p "~/" value)
+                           (expand-file-name value)
+                         value))))
+             (plist-get plist :env)))))
+
+(defun devops--scheme-dir (plist)
+  "Return the directory a scheme target with PLIST runs in.
+The scheme's :dir, relative to the current project's root, or that root.
+Outside a project the root is `default-directory'."
+  (let ((root (if-let* ((project (project-current nil)))
+                  (project-root project)
+                default-directory)))
+    (file-name-as-directory
+     (expand-file-name (or (plist-get plist :dir) ".") root))))
+
+(defun devops--target-dir (target)
+  "Return the :dir a block on TARGET runs in.
+TARGET itself, or for a scheme target its local directory."
+  (if-let* ((scheme (devops-target-scheme target)))
+      (devops--scheme-dir (nth 2 scheme))
+    target))
+
 (defun devops--resolve-target-for-tag (tag)
-  "Look up TAG in #+TARGET keywords, return target name or nil."
+  "Look up TAG in #+TARGET keywords, return target name or nil.
+A scheme target, written or resolved from a reference, is checked by
+`devops-target-scheme'."
   (when-let* ((target (cdr (assoc tag (devops-target-tag-alist)))))
-    (if-let* ((ref (devops-target-ref target)))
-        (devops--target-from-ref tag ref)
+    (let ((target (if-let* ((ref (devops-target-ref target)))
+                      (devops--target-from-ref tag ref)
+                    target)))
+      (devops-target-scheme target tag)
       target)))
 
 (defun devops-heading-targets ()
@@ -236,7 +317,8 @@ If more than one of the heading's tags names a target, use
   "Return :dir from the current heading's tags and #+TARGET mappings.
 If there is more than one target, use `completing-read', allowing the
 user to select one."
-  (cdr (devops--heading-target)))
+  (when-let* ((pair (devops--heading-target)))
+    (devops--target-dir (cdr pair))))
 
 (defun devops-set-header-args-from-tags ()
   "Set :header-args: :dir from the current heading's tag and #+TARGET mappings."
@@ -280,11 +362,16 @@ for any value other than those in `devops--target-none-values'."
 (defun devops--session-name (target &optional slot)
   "Return the name of session SLOT in the pool for TARGET.
 SLOT counts from 1, the default.  Slot 1 is \"devops:TARGET\" and slot N
-adds \"<N>\", the way Emacs names a second buffer."
+adds \"<N>\", the way Emacs names a second buffer.  A scheme target is
+followed by the directory it runs in, \"devops:/aws:prod:/src/app/\": a
+session keeps the directory it started in."
   (format "devops:%s%s"
-          (if (tramp-tramp-file-p target)
-              target
-            (file-name-as-directory (expand-file-name target)))
+          (cond ((devops-target-scheme target)
+                 (concat target (devops--target-dir target)))
+                ((tramp-tramp-file-p target)
+                 target)
+                (t
+                 (file-name-as-directory (expand-file-name target))))
           (if (and slot (> slot 1)) (format "<%d>" slot) "")))
 
 (defun devops--async-marker (kind id)
@@ -424,7 +511,8 @@ ARGS is its whole argument list.  Nil when the block opted out with
   "Return ARGS, for `org-babel-execute-src-block', set to run on PAIR.
 PAIR is the (TAG . TARGET) from `devops--execution-target', or nil to
 leave ARGS alone.  Only PARAMS, the third argument, is rewritten: :dir
-is the target, and :session and :async are injected as decision 2 says."
+is the target, or a scheme target's local directory, and :session and
+:async are injected as decision 2 says."
   (if (not pair)
       args
     (let* ((info (nth 1 args))
@@ -435,7 +523,7 @@ is the target, and :session and :async are injected as decision 2 says."
             ;; Ours first: within one alist `org-babel-merge-params'
             ;; lets a later pair overwrite an earlier one, so an
             ;; explicit PARAMS from the caller still wins.
-            (append (cons (cons :dir (cdr pair))
+            (append (cons (cons :dir (devops--target-dir (cdr pair)))
                           (devops--async-session-cells
                            params block-params (nth 0 block-info)
                            (cdr pair)))
@@ -451,8 +539,15 @@ is the target, and :session and :async are injected as decision 2 says."
   "Advise `org-babel-execute-src-block' (FN with ARGS) to run on the target.
 The heading's #+TARGET is resolved once, injected by
 `devops--inject-header-args', and bound to `devops--block-target' for
-the run, with the session it gets bound to `devops-block-session'."
+the run, with the session it gets bound to `devops-block-session'.  A
+scheme target's environment is put in front of `process-environment',
+so a session started by the run inherits it."
   (let* ((devops--block-target (devops--execution-target args))
+         (process-environment
+          (append (mapcar (lambda (pair) (concat (car pair) "=" (cdr pair)))
+                          (and devops--block-target
+                               (devops-target-env (cdr devops--block-target))))
+                  process-environment))
          (args (devops--inject-header-args args devops--block-target))
          (devops-block-session
           (when-let* ((pair devops--block-target))
@@ -682,7 +777,9 @@ Return the number of files tangled, or nil."
   "Return a tangle plan for the current buffer.
 Each entry is a plist (:tag TAG :target TARGET :heading-pos POS).
 
-With prefix ARG non-nil, include all target-tagged headings."
+With prefix ARG non-nil, include all target-tagged headings, skipping
+scheme targets with a message.  Without, a scheme target on the heading
+is an error: it is not a filesystem."
   (if arg
       (let (specs)
         (org-map-entries
@@ -693,14 +790,21 @@ With prefix ARG non-nil, include all target-tagged headings."
                            (seq-remove (lambda (pair)
                                          (member (car pair) parent-tags))
                                        (devops-heading-targets))))
-             (push (list :tag (car pair)
-                         :target (cdr pair)
-                         :heading-pos (point))
-                   specs))))
+             (if (devops-target-scheme (cdr pair))
+                 (message "Skipping target %s: %s is not a filesystem target"
+                          (car pair) (cdr pair))
+               (push (list :tag (car pair)
+                           :target (cdr pair)
+                           :heading-pos (point))
+                     specs)))))
         (nreverse specs))
     (let ((pairs (devops-heading-targets)))
       (unless pairs
         (user-error "No #+TARGET match for tags on current heading"))
+      (dolist (pair pairs)
+        (when (devops-target-scheme (cdr pair))
+          (user-error "Target %s: %s is not a filesystem target"
+                      (car pair) (cdr pair))))
       (let ((pos (save-excursion (org-back-to-heading t) (point))))
         (mapcar (lambda (pair)
                   (list :tag (car pair)
@@ -898,10 +1002,14 @@ is an alist of (NAME . VALUE) exported in that shell."
 ;;;###autoload
 (defun devops-open-terminal-dwim ()
   "Open terminal at contextual directory.
-In a src block, if the : copies body to clipboard and exports :var env vars."
+In a src block, if the : copies body to clipboard and exports :var env vars.
+On a scheme target the terminal is local, in the target's directory, and
+exports the scheme's environment before the block's vars."
   (interactive)
-  (let* ((dir (devops--heading-target-dir))
-         (env-vars (devops-src-block-env-vars))
+  (let* ((target (cdr (devops--heading-target)))
+         (dir (and target (devops--target-dir target)))
+         (env-vars (append (and target (devops-target-env target))
+                           (devops-src-block-env-vars)))
          (lang (org-element-property :language (org-element-at-point))))
     (when (or (string= lang "shell") (string= lang "sh"))
       (kill-new (devops--src-block-body))

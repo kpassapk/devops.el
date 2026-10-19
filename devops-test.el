@@ -2190,4 +2190,216 @@ tools.org; with it off, nothing loads."
         (devops-lob-mode -1)
         (when (buffer-live-p buf) (kill-buffer buf))))))
 
+;;; Scheme targets (/SCHEME:ARG:, a credential as a #+TARGET)
+
+(defconst devops-test--schemes
+  '(("aws"  :env (("AWS_PROFILE" . "%s")) :allow ("dev" "prod"))
+    ("kube" :env (("KUBECONFIG" . "~/.kube/%s.yaml")) :dir "deploy"))
+  "A `devops-target-schemes' for the tests below.")
+
+(defmacro devops-test--with-scheme-org (root-var text &rest body)
+  "Run BODY in an org buffer with TEXT, inside a fresh project at ROOT-VAR.
+`devops-target-schemes' is `devops-test--schemes', and TRAMP's file name
+handler signals: no scheme name may reach it."
+  (declare (indent 2))
+  `(devops-test--with-project ,root-var nil
+     (let ((devops-target-schemes devops-test--schemes))
+       (cl-letf (((symbol-function 'tramp-file-name-handler)
+                  (lambda (&rest args)
+                    (error "TRAMP saw %S" args))))
+         (devops-test--with-org ,text
+           (goto-char (point-min))
+           ,@body)))))
+
+(ert-deftest devops-target-scheme-test ()
+  "A /SCHEME:ARG: target parses; an unknown scheme is left to TRAMP."
+  (let ((devops-target-schemes devops-test--schemes))
+    (should (equal (devops-target-scheme "/aws:prod:")
+                   (list "aws" "prod" (cdr (assoc "aws" devops-test--schemes)))))
+    (should (equal (car (devops-target-scheme "/kube:any-name_1:")) "kube"))
+    (should-not (devops-target-scheme "/ssh:host:"))
+    (should-not (devops-target-scheme "/srv/app/"))
+    (should-not (devops-target-scheme ".."))))
+
+(ert-deftest devops-target-scheme-allow-test ()
+  "An ARG not in :allow is an error naming the tag."
+  (let ((devops-target-schemes devops-test--schemes))
+    (should (equal (cadr (should-error (devops-target-scheme "/aws:prod-admin:" "prod")
+                                       :type 'user-error))
+                   "Target prod: aws:prod-admin is not in :allow"))))
+
+(ert-deftest devops-target-scheme-name-syntax-test ()
+  "An ARG that is not a name, or a path after the name, is an error."
+  (let ((devops-target-schemes devops-test--schemes))
+    (dolist (target '("/aws:../x:" "/aws::" "/aws:prod:/x" "/aws:.prod:"
+                      "/kube:a/b:" "/kube:a.b:"))
+      (should-error (devops-target-scheme target) :type 'user-error))))
+
+(ert-deftest devops-target-env-test ()
+  "The env puts ARG in each FORMAT and expands a leading ~/."
+  (let ((devops-target-schemes devops-test--schemes))
+    (should (equal (devops-target-env "/aws:prod:") '(("AWS_PROFILE" . "prod"))))
+    (should (equal (devops-target-env "/kube:stage:")
+                   `(("KUBECONFIG" . ,(expand-file-name "~/.kube/stage.yaml")))))
+    (should-not (devops-target-env "/srv/app/"))))
+
+(ert-deftest devops-target-scheme-dir-test ()
+  "A scheme target runs at the project root, or its :dir under it."
+  (devops-test--with-scheme-org root ""
+    (make-directory (expand-file-name "sub/dir" root) t)
+    (let ((default-directory (expand-file-name "sub/dir/" root)))
+      (should (equal (devops--target-dir "/aws:prod:") root))
+      (should (equal (devops--target-dir "/kube:x:") (concat root "deploy/"))))))
+
+(ert-deftest devops-target-scheme-dir-no-project-test ()
+  "Outside a project, a scheme target runs in the org file's directory."
+  (let ((devops-target-schemes devops-test--schemes)
+        (default-directory (file-name-as-directory
+                            (make-temp-file "devops-noproj-" t))))
+    (unwind-protect
+        (cl-letf (((symbol-function 'project-current) #'ignore))
+          (should (equal (devops--target-dir "/aws:prod:") default-directory)))
+      (delete-directory default-directory t))))
+
+(ert-deftest devops-session-name-scheme-test ()
+  "A scheme target's pool is named by the target and the dir it runs in."
+  (devops-test--with-scheme-org root ""
+    (should (equal (devops--session-name "/aws:prod:")
+                   (concat "devops:/aws:prod:" root)))
+    (should (equal (devops--session-name "/aws:dev:" 2)
+                   (concat "devops:/aws:dev:" root "<2>")))))
+
+(ert-deftest devops-execute-scheme-target-test ()
+  "A block under a scheme target runs at the project root with its env."
+  (devops-test--with-scheme-org root
+      (concat "#+TARGET: prod /aws:prod:\n"
+              "#+TARGET: dev /aws:dev:\n\n"
+              "* Prod\t\t:prod:\n\n"
+              "#+begin_src sh :results output\npwd; echo $AWS_PROFILE\n#+end_src\n\n"
+              "* Dev\t\t:dev:\n\n"
+              "#+begin_src sh :results output\necho $AWS_PROFILE\n#+end_src\n")
+    (let ((org-confirm-babel-evaluate nil))
+      (re-search-forward "begin_src")
+      (pcase-let ((`(,pwd ,profile)
+                   (split-string (org-babel-execute-src-block) "\n" t)))
+        (should (equal (file-name-as-directory (file-truename pwd))
+                       (file-truename root)))
+        (should (equal profile "prod")))
+      (re-search-forward "begin_src")
+      (should (equal (org-trim (org-babel-execute-src-block)) "dev"))
+      (should-not (member "AWS_PROFILE=prod" process-environment)))))
+
+(ert-deftest devops-execute-scheme-target-params-test ()
+  "The injected :dir is the project root, and the session is the scheme's pool."
+  (let ((devops-enable-session-async t))
+    (devops-test--with-scheme-org root
+        (concat "#+TARGET: prod /aws:prod:\n\n"
+                "* Prod\t\t:prod:\n\n"
+                "#+begin_src sh\npwd\n#+end_src\n")
+      (re-search-forward "begin_src")
+      (let ((params (devops-test--executor-params "sh")))
+        (should (equal (cdr (assq :dir params)) root))
+        (should (equal (cdr (assq :session params))
+                       (concat "devops:/aws:prod:" root)))))))
+
+(ert-deftest devops-execute-scheme-target-not-allowed-test ()
+  "A target not in :allow fails before anything runs."
+  (devops-test--with-scheme-org root
+      (concat "#+TARGET: prod /aws:prod-admin:\n\n"
+              "* Prod\t\t:prod:\n\n"
+              "#+begin_src sh\npwd\n#+end_src\n")
+    (re-search-forward "begin_src")
+    (cl-letf (((symbol-function 'org-babel-execute:sh)
+               (lambda (&rest _) (error "Should not run"))))
+      (let ((org-confirm-babel-evaluate nil))
+        (should-error (org-babel-execute-src-block) :type 'user-error)))))
+
+(ert-deftest devops-execute-scheme-target-from-ref-test ()
+  "A dynamic target that yields a scheme target runs the same way, and is checked."
+  (devops-test--with-scheme-org root
+      (concat "#+TARGET: prod <<where()>>\n\n"
+              "* Locate\n\n"
+              "#+name: where\n"
+              "#+begin_src emacs-lisp\nwhere\n#+end_src\n\n"
+              "* Prod\t\t:prod:\n\n"
+              "#+begin_src sh :results output\necho $AWS_PROFILE\n#+end_src\n")
+    (let ((org-confirm-babel-evaluate nil))
+      (goto-char (point-max))
+      (re-search-backward "begin_src")
+      (let ((where "/aws:prod:"))
+        (cl-letf (((symbol-function 'org-babel-execute:emacs-lisp)
+                   (lambda (&rest _) where)))
+          (should (equal (org-trim (org-babel-execute-src-block)) "prod"))
+          (setq where "/aws:prod-admin:")
+          (should-error (org-babel-execute-src-block) :type 'user-error))))))
+
+(ert-deftest devops-execute-scheme-target-async-session-test ()
+  "An async session started for a scheme target carries its env."
+  (let ((devops-enable-session-async t))
+    (devops-test--with-scheme-org root
+        (concat "#+TARGET: prod /aws:prod:\n\n"
+                "* Prod\t\t:prod:\n\n"
+                "#+begin_src sh :results output\necho $AWS_PROFILE\n#+end_src\n")
+      (let ((session (devops--session-name "/aws:prod:")))
+        (unwind-protect
+            (let* ((org-confirm-babel-evaluate nil)
+                   (uuid (progn (re-search-forward "begin_src")
+                                (org-babel-execute-src-block)))
+                   (deadline (+ (float-time) 30)))
+              (should (get-buffer session))
+              (while (and (< (float-time) deadline)
+                          (save-excursion
+                            (goto-char (point-min))
+                            (search-forward uuid nil t)))
+                (accept-process-output nil 0.2))
+              (goto-char (point-min))
+              (should (re-search-forward "^: prod$" nil t)))
+          (when-let* ((buf (get-buffer session)))
+            (let ((kill-buffer-query-functions nil))
+              (kill-buffer buf))))))))
+
+(ert-deftest devops-tangle-scheme-target-refuses-test ()
+  "Tangling, visiting or drift-checking a scheme target's heading is an error."
+  (devops-test--with-scheme-org root
+      (concat "#+TARGET: prod /aws:prod:\n\n"
+              "* Prod\t\t:prod:\n\n"
+              "#+begin_src conf :tangle x.conf\nx\n#+end_src\n")
+    (re-search-forward "begin_src")
+    (should (equal (cadr (should-error (devops-tangle) :type 'user-error))
+                   "Target prod: /aws:prod: is not a filesystem target"))
+    (should-error (devops-visit-file) :type 'user-error)
+    (should-error (devops-drift--check (current-buffer)) :type 'user-error)))
+
+(ert-deftest devops-tangle-all-skips-scheme-target-test ()
+  "Tangling every heading skips a scheme target and tangles the rest."
+  (devops-test--with-local-target target
+    (devops-test--with-scheme-org root
+        (format (concat "#+TARGET: prod /aws:prod:\n"
+                        "#+TARGET: local %s\n\n"
+                        "* Prod\t\t:prod:\n\n"
+                        "#+begin_src conf :tangle x.conf\nx\n#+end_src\n\n"
+                        "* Local\t\t:local:\n\n"
+                        "#+begin_src conf :tangle y.conf\ny\n#+end_src\n")
+                target)
+      (should (equal (devops-tangle-all (current-buffer))
+                     (list (list "local" target 1))))
+      (should (file-exists-p (concat target "y.conf"))))))
+
+(ert-deftest devops-open-terminal-dwim-scheme-target-test ()
+  "The terminal is local, at the project root, with the scheme's env first."
+  (devops-test--with-scheme-org root
+      (concat "#+TARGET: prod /aws:prod:\n\n"
+              "* Prod\t\t:prod:\n\n"
+              "#+begin_src sh :var name=\"val\"\naws s3 ls\n#+end_src\n")
+    (re-search-forward "begin_src")
+    (let (called kill-ring)
+      (cl-letf (((symbol-function 'start-process)
+                 (lambda (_name _buf &rest cmd) (setq called cmd))))
+        (devops-open-terminal-dwim))
+      (should (equal called
+                     (list "ghostty" (concat "--working-directory=" root)
+                           "-e" "bash" "-c"
+                           "export AWS_PROFILE=prod && export name=val && exec $SHELL")))
+      (should (equal (car kill-ring) "aws s3 ls")))))
+
 (provide 'devops-test)

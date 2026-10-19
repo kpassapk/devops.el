@@ -1,0 +1,227 @@
+#+TITLE: Scheme targets: a CLI's credential as a #+TARGET
+#+PROPERTY: header-args:sh :results output
+#+TARGET: local ..
+
+* Background
+
+A =#+TARGET= is a place: a directory or a TRAMP prefix, injected as
+=:dir=. But much of what an operator reaches with credentials is not a
+filesystem: an AWS service, a kube deployment, a =gh= account, a
+=PGSERVICE=. Today a block picks those itself (=aws --profile prod …=),
+so nothing about the heading says which credential it uses, and
+nothing stops a block from naming another one.
+
+TRAMP already covers containers and pods as filesystems
+(=/ssh:host|podman:box:=, =/kubernetes:pod:=), so those stay as they
+are. This is for the rest.
+
+The driver is devops.bb's sandbox work: Claude, in a sandbox, writes
+the workbook, and the operator runs it. There, a target is a
+credential, the prompt shows which one a block will use, and the
+operator, not the workbook, decides which ones a workbook may name.
+
+* Spec
+
+** Goal
+
+- =#+TARGET: prod /aws:prod:= makes the blocks under =:prod:= run with
+  the credential context =aws:prod=, chosen through the environment.
+- The body runs unchanged: several commands, pipes, loops, =aws= and
+  =jq= and =kubectl= mixed.
+- What a scheme means is set in the operator's Emacs, never in the
+  workbook, with an allowlist per scheme.
+- =devops-open-terminal-dwim= opens a terminal with the same
+  environment.
+
+** Why environment, not a prefix
+
+Interpolating a prefix (=aws --profile prod <<BLOCK>>=) works for a
+one-command body only. With a pipe it applies to the first word,
+quoting breaks, and the text that runs is neither what was written nor
+what the operator read. The CLIs already pick credentials from the
+environment: =AWS_PROFILE=, =KUBECONFIG=, =GH_CONFIG_DIR=,
+=PGSERVICE=, =CLOUDSDK_ACTIVE_CONFIG_NAME=. A scheme target sets those
+for the session, and the body is left alone.
+
+** Syntax
+
+=/SCHEME:ARG:=, a TRAMP-like name that is not TRAMP: SCHEME is a key of
+=devops-target-schemes=, ARG a name, =[[:alnum:]][[:alnum:]_-]*= (no
+=.=, no =/=, so =%s= in a path cannot climb out). It is recognized
+before any TRAMP call: a scheme name must never reach
+=expand-file-name=, =file-remote-p= or =tramp-dissect-file-name=, whose
+file name handlers would try =aws= as a TRAMP method (step 1 checks
+what each does with one). A name whose SCHEME is not in the map is
+left to TRAMP as today.
+
+** The map
+
+#+begin_src emacs-lisp :eval no
+(defcustom devops-target-schemes nil
+  "Schemes a #+TARGET may name as /SCHEME:ARG:, for non-filesystem targets.
+Each entry is (SCHEME . PLIST):
+
+  :env    alist of (NAME . FORMAT); FORMAT's %s is ARG, and a value
+          starting with ~/ is expanded.  Set in the session's
+          environment when it starts.
+  :allow  list of the ARGs a workbook may name, or nil for any ARG
+          matching the name syntax.
+  :dir    directory the blocks run in, relative to the project root,
+          or nil for the project root itself.  Outside a project the
+          root is the org file's directory."
+  :type '(alist :key-type string :value-type plist)
+  :group 'devops)
+
+(setq devops-target-schemes
+      '(("aws"  :env (("AWS_PROFILE" . "%s")) :allow ("dev" "staging" "prod"))
+        ("kube" :env (("KUBECONFIG" . "~/.kube/%s.yaml")))
+        ("gh"   :env (("GH_CONFIG_DIR" . "~/.config/gh-%s")))
+        ("pg"   :env (("PGSERVICE" . "%s")))))
+#+end_src
+
+=:allow= is what makes this safe when someone else writes the workbook:
+=/aws:prod-admin:= fails with =user-error "Target prod: aws:prod-admin
+is not in :allow"= before anything runs.
+
+** Resolution
+
+- =devops--parse-target-keyword= is unchanged: =/aws:prod:= is already
+  one word.
+- A new =devops-target-scheme TARGET= returns =(SCHEME ARG PLIST)= for a
+  scheme target, or nil. It checks the name syntax and =:allow=.
+- Dynamic targets compose: =#+TARGET: prod <<assume-role()>>= may yield
+  =/aws:prod:=, and is checked the same way after it resolves.
+- =devops-target-env TARGET= returns the expanded =(NAME . VALUE)=
+  alist, public, for a package that shows it (devops.bb's confirm
+  prompt: =target /aws:prod: · AWS_PROFILE=prod=).
+
+** Sessions
+
+- =devops--inject-header-args= injects =:session= and =:async= as
+  today, and =:dir= as the project root (=project-current=, else the
+  org file's directory), or the scheme's =:dir= relative to it. It
+  never injects the scheme name as =:dir=.
+- =devops--session-name= names the pool by the target as written,
+  followed by that directory, =devops:/aws:prod:/src/app/=: a session
+  keeps the directory it started in, so two projects using
+  =/aws:prod:= must not share one.
+- =devops--execute-on-target= binds =process-environment= with the
+  scheme's =:env= in front around the run. A session's shell inherits
+  it when babel starts the session, so it holds for every block that
+  session runs after: sh, bash, python, any session language. A live
+  session keeps the environment it started with; after changing
+  =devops-target-schemes=, kill its sessions. The README says so.
+- A block can still =export AWS_PROFILE=other= inside the session, and
+  that carries over. The reviewer sees it in the block; the README says
+  so too.
+- =:target nil= and a block's own =:dir= opt out as today.
+
+** Shell DWIM
+
+=devops-open-terminal-dwim= on a heading with a scheme target:
+
+- opens a *local* terminal (=devops--open-terminal-at-dir=), in the
+  same directory blocks run in, never through the
+  =file-remote-p= branch;
+- exports the scheme's =:env= first, then the block's =:var= env vars,
+  so a block's own variable wins as it does today;
+- copies a shell block's body to the kill ring, as today.
+
+=devops--ghostty-command= takes the merged alist; only the caller
+changes.
+
+** Tangle and drift
+
+A scheme target is not a filesystem. =devops-tangle=, =devops-drift=
+and =devops-visit-file= on it fail with =user-error "Target prod:
+/aws:prod: is not a filesystem target"=, and =devops-tangle-all= skips
+it with a message.
+
+** Not in scope
+
+- Schemes over a remote host (=/ssh:bastion|aws:prod:=): the scheme's
+  environment is local.
+- Credentials that are not environment (=aws sso login= state, a
+  keychain prompt): the CLI handles them as it does today.
+- Checking *who* a credential is (=aws sts get-caller-identity=) at run
+  time. A package may add it; devops.el does not run it.
+
+** Done when
+
+- A block under =#+TARGET: prod /aws:prod:= prints =AWS_PROFILE=prod=
+  with =env | grep AWS_=, in an async sh session and in python; a
+  second target =/aws:dev:= runs in its own pool with its own value.
+- =/aws:prod-admin:= with =:allow ("prod")= fails before a session
+  starts; =/aws:../x:= fails the name syntax.
+- A dynamic target yielding =/aws:prod:= runs the same way.
+- No TRAMP function sees a scheme name: a test with
+  =tramp-file-name-handler= advised to signal never trips.
+- =devops-open-terminal-dwim= on the heading builds a local ghostty
+  command exporting =AWS_PROFILE=prod= then the block's vars
+  (=devops--ghostty-command= is the pure part to test).
+- =devops-tangle= on the heading fails with the message above.
+- =make compile= and =make test= pass on Emacs 30.1; an example in
+  =examples/=; README section.
+
+** Code map
+
+| Function                          | Change                                                    |
+|-----------------------------------+-----------------------------------------------------------|
+| =devops-target-schemes=           | new defcustom                                             |
+| =devops-target-scheme=            | new: parse, syntax, =:allow=                              |
+| =devops-target-env=               | new, public: the expanded env alist                       |
+| =devops--resolve-target-for-tag=  | check a resolved dynamic target through the scheme too    |
+| =devops--inject-header-args=      | no =:dir= for a scheme target, unless the scheme's =:dir= |
+| =devops--session-name=            | scheme names as written                                   |
+| =devops--execute-on-target=       | bind =process-environment=                                |
+| =devops-open-terminal-dwim=       | local dir, merged env                                     |
+| tangle, drift, visit-file         | not-a-filesystem error                                    |
+| =devops-test.el=                  | the cases in Done when                                    |
+
+* Steps
+
+** DONE 1. What does Emacs do with a scheme name today?            :local:
+
+Which of these call TRAMP, and which signal? Each must be avoided, or
+be safe, for =/aws:prod:=.
+
+#+begin_src emacs-lisp :results output
+(require 'tramp)
+(dolist (f '(tramp-tramp-file-p file-remote-p expand-file-name
+             file-name-as-directory))
+  (princ (format "%-24s %S\n" f
+                 (condition-case err (funcall f "/aws:prod:")
+                   (error (list 'error (error-message-string err)))))))
+#+end_src
+
+#+RESULTS:
+: tramp-tramp-file-p       t
+: file-remote-p            "/aws:prod:"
+: expand-file-name         (error "Method ‘aws’ is not known")
+: file-name-as-directory   (error "Method ‘aws’ is not known")
+
+** DONE 2. Baseline: tests pass                                     :local:
+
+#+begin_src sh
+make compile 2>&1 | tail -n 5
+make test 2>&1 | tail -n 5
+#+end_src
+
+#+RESULTS:
+: emacs --batch -L . --eval "(setq native-comp-enable-subr-trampolines nil)" \
+: 	  --eval "(setq byte-compile-error-on-warn t)" \
+: 	  -f batch-byte-compile devops.el devops-lob.el devops-drift.el devops-test.el
+: passed  145/146  devops-user-run-p-test (0.000016 sec)
+:    passed  146/146  devops-with-sync-inhibits-async-test (0.000552 sec)
+: 
+: Ran 146 tests, 146 results as expected, 0 unexpected (2026-10-19 15:22:38-0600, 2.471665 sec)
+
+** DONE 3. =devops-target-schemes=, =devops-target-scheme=, =devops-target-env=
+** DONE 4. Sessions: naming, no =:dir=, =process-environment=
+** DONE 5. Dynamic targets yielding a scheme
+** DONE 6. Shell DWIM
+** DONE 7. Tangle, drift, visit-file refuse
+** DONE 8. Example, README
+** TODO 9. devops.bb: show =devops-target-env= in the confirm prompt
+In devops.bb's sandbox workbook; the resolved env is part of the
+fingerprint.
