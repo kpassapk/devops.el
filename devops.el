@@ -257,7 +257,7 @@ The scheme's :env with ARG put in and a leading ~/ expanded."
              (plist-get plist :env)))))
 
 (defun devops--scheme-dir (plist)
-  "Return the directory a scheme target with PLIST runs in.
+  "Return the directory to run a scheme target with PLIST in.
 The scheme's :dir, relative to the current project's root, or that root.
 Outside a project the root is `default-directory'."
   (let ((root (if-let* ((project (project-current nil)))
@@ -267,7 +267,7 @@ Outside a project the root is `default-directory'."
      (expand-file-name (or (plist-get plist :dir) ".") root))))
 
 (defun devops--target-dir (target)
-  "Return the :dir a block on TARGET runs in.
+  "Return the :dir to run a block on TARGET in.
 TARGET itself, or for a scheme target its local directory."
   (if-let* ((scheme (devops-target-scheme target)))
       (devops--scheme-dir (nth 2 scheme))
