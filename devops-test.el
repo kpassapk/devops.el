@@ -240,6 +240,35 @@ The directory is removed afterwards."
     (let ((org-confirm-babel-evaluate nil))
       (should-error (devops--resolve-target-for-tag "t1") :type 'user-error))))
 
+(defvar devops-test--seen nil
+  "Values of `devops-resolving-target' seen by test blocks, latest first.")
+
+(ert-deftest devops-resolving-target-test ()
+  "`devops-resolving-target' is the innermost (TAG . REF) while resolving."
+  (devops-test--with-org
+      (concat "#+TARGET: t1 <<a()>>\n#+TARGET: t2 <<b()>>\n"
+              "#+TARGET: t3 <<c()>>\n\n"
+              "* A\t\t:t2:\n\n"
+              "#+name: a\n#+begin_src emacs-lisp\n"
+              "(push devops-resolving-target devops-test--seen)\n"
+              "temporary-file-directory\n#+end_src\n\n"
+              "* B\n\n"
+              "#+name: b\n#+begin_src emacs-lisp\n"
+              "(push devops-resolving-target devops-test--seen)\n"
+              "temporary-file-directory\n#+end_src\n\n"
+              "#+name: c\n#+begin_src emacs-lisp\n"
+              "(error \"Boom\")\n#+end_src\n")
+    (let ((org-confirm-babel-evaluate nil)
+          (devops-test--seen nil))
+      (should-not devops-resolving-target)
+      ;; Resolving t1 runs a, under t2, which first resolves t2 by b.
+      (should (equal (devops--resolve-target-for-tag "t1")
+                     temporary-file-directory))
+      (should (equal devops-test--seen '(("t1" . "a()") ("t2" . "b()"))))
+      (should-not devops-resolving-target)
+      (should-error (devops--resolve-target-for-tag "t3"))
+      (should-not devops-resolving-target))))
+
 (ert-deftest devops-heading-targets-resolves-only-its-tags-test ()
   "Only the references of tags on the heading are resolved."
   (devops-test--with-org

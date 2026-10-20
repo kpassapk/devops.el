@@ -68,6 +68,10 @@
 ;;
 ;; - `devops-enable-session-async'  run blocks in async session pool
 ;;
+;; For packages that build on it:
+;;
+;; - `devops-resolving-target'  (TAG . REF) while a dynamic target resolves
+;;
 ;; Please report issues at
 ;; https://github.com/kpassapk/devops.el/issues
 
@@ -167,6 +171,13 @@ written in noweb's brackets, `<<NAME>>' or `<<NAME(ARGS)>>'."
 (defvar devops--resolving-tags nil
   "Tags whose target references are being resolved, innermost first.")
 
+(defvar devops-resolving-target nil
+  "The dynamic target being resolved, as (TAG . REF), or nil.
+Bound while `devops--target-from-ref' runs REF, the reference in TAG's
+#+TARGET keyword, so code called from it, such as a confirmation
+prompt, can tell the block runs to locate a target.  When resolutions
+nest, it holds the innermost.")
+
 (defun devops--target-value-string (value)
   "Return VALUE, a resolved reference, as a trimmed string, or nil.
 A shell block with `:results value' hands its one line back as a
@@ -188,6 +199,7 @@ value."
     (user-error "Target %s: %s is a src block; write <<%s()>> to run it"
                 tag ref ref))
   (let* ((devops--resolving-tags (cons tag devops--resolving-tags))
+         (devops-resolving-target (cons tag ref))
          (value (devops--target-value-string
                  (save-excursion (org-babel-ref-resolve ref)))))
     (when (or (null value)
