@@ -1734,20 +1734,29 @@ override (issue #14)."
   "Run BODY with a stand-in for the ghostel package.
 `ghostel' records the buffer name and environment it was called with in
 `started' and returns a buffer of that name; `ghostel-paste-string'
-records its text in `pasted'.  Buffers it made are killed afterwards."
+records its text in `pasted' and `ghostel-send-key' its key in `keys'.
+A terminal is running a command while `busy' is non-nil.  Buffers it
+made are killed afterwards."
   (declare (indent 0) (debug t))
   ;; `features' is not special, so it is set and restored, not let-bound.
   `(let ((saved-features features)
          (ghostel-buffer-name "*ghostel*")
          (ghostel-environment '("KEEP=1"))
          (started nil)
-         (pasted nil))
+         (pasted nil)
+         (keys nil)
+         (busy nil))
      (cl-letf (((symbol-function 'ghostel)
                 (lambda (&optional _arg)
                   (push (list ghostel-buffer-name ghostel-environment) started)
                   (get-buffer-create ghostel-buffer-name)))
                ((symbol-function 'ghostel-paste-string)
-                (lambda (text) (push (list (buffer-name) text) pasted))))
+                (lambda (text) (push (list (buffer-name) text) pasted)))
+               ((symbol-function 'ghostel-send-key)
+                (lambda (key &optional _mods) (push key keys)))
+               ((symbol-function 'ghostel-alt-screen-p) #'ignore)
+               ((symbol-function 'ghostel-command-running-p)
+                (lambda () busy)))
        (unwind-protect
            (progn
              (push 'ghostel features)
@@ -1777,6 +1786,57 @@ records its text in `pasted'.  Buffers it made are killed afterwards."
         (devops--open-ghostel dir '(("FOO" . "bar")) "echo $FOO")
         (should (equal (car started) `(,name ("KEEP=1"))))
         (should (equal pasted `((,name "export FOO=bar\necho $FOO"))))))))
+
+(ert-deftest devops--run-in-ghostel-new-terminal-test ()
+  "A new terminal gets the env vars in its environment and runs the body."
+  (devops-test--with-local-target dir
+    (devops-test--with-fake-ghostel
+      (devops--run-in-ghostel dir '(("FOO" . "bar")) "echo $FOO")
+      (let ((name (devops--ghostel-buffer-name dir)))
+        (should (equal started `((,name ("FOO=bar" "KEEP=1")))))
+        (should (equal pasted `((,name "echo $FOO"))))
+        (should (equal keys '("return")))))))
+
+(ert-deftest devops--run-in-ghostel-open-terminal-test ()
+  "A terminal at a prompt gets the exports and body, then return."
+  (devops-test--with-local-target dir
+    (devops-test--with-fake-ghostel
+      (let ((name (devops--ghostel-buffer-name dir)))
+        (get-buffer-create name)
+        (push (list name nil) started)
+        (devops--run-in-ghostel dir '(("FOO" . "bar")) "echo $FOO")
+        (should (equal pasted `((,name "export FOO=bar\necho $FOO"))))
+        (should (equal keys '("return")))))))
+
+(ert-deftest devops--run-in-ghostel-busy-test ()
+  "Nothing is typed into a terminal while a command runs in it."
+  (devops-test--with-local-target dir
+    (devops-test--with-fake-ghostel
+      (get-buffer-create (devops--ghostel-buffer-name dir))
+      (push (list (devops--ghostel-buffer-name dir) nil) started)
+      (setq busy t)
+      (should-error (devops--run-in-ghostel dir nil "echo hi")
+                    :type 'user-error)
+      (should-not pasted)
+      (should-not keys))))
+
+(ert-deftest devops--block-terminal-dir-test ()
+  "A block's own :dir wins, then the target unless opted out, then here."
+  (devops-test--with-org
+      "#+TARGET: web /ssh:web1:/srv/\n\n* H\t:web:\n"
+    (should (equal (devops--block-terminal-dir '((:dir . "/opt/")))
+                   "/opt/"))
+    (should (equal (devops--block-terminal-dir nil) "/ssh:web1:/srv/"))
+    (should (equal (devops--block-terminal-dir '((:target . "nil")))
+                   default-directory))))
+
+(ert-deftest devops-run-in-terminal-not-shell-test ()
+  "Only a shell block with a body can be run in the terminal."
+  (devops-test--with-org
+      "* H\n\n#+begin_src emacs-lisp\n  (+ 1 2)\n#+end_src\n"
+    (goto-char (point-min))
+    (re-search-forward "begin_src")
+    (should-error (devops-run-in-terminal) :type 'user-error)))
 
 ;;; Drift detection (devops-drift.el)
 

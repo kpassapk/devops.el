@@ -367,6 +367,10 @@ shell. The source block content is copied to the clipboard, so you can do
 (setq devops-terminal-program 'ghostel)
 ```
 
+### Run a block in the terminal
+
+`M-x devops-run-in-terminal` runs the shell block at point in that ghostel terminal, whatever `devops-terminal-program` is. Use it for commands babel handles badly: ones that ask for a password, follow a log (`tail -f`), or take over the screen (`htop`). The block runs at its `:dir`, else its heading's target (unless `:target nil`), else `default-directory`, with its `:var` arguments exported. A terminal that is busy with a command is left alone.
+
 ## devops-lob
 
 `devops.el` uses org's Library of Babel (LOB) to save commonly used server commands. 

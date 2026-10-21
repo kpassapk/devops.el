@@ -57,6 +57,8 @@
 ;; - `devops-tangle'             tangle the heading's blocks to its target
 ;; - `devops-visit-file'         open tangled source block in the target
 ;; - `devops-open-terminal-dwim' open a terminal at the target
+;; - `devops-run-in-terminal'    run the block in a ghostel terminal
+;;                               at the target
 ;; - `devops-drift'              (if loaded) report diff between blocks
 ;;                               and tangled files
 ;;
@@ -883,6 +885,9 @@ is an alist of (NAME . VALUE) exported in that shell."
 (defvar ghostel-environment)
 (declare-function ghostel "ghostel" (&optional arg))
 (declare-function ghostel-paste-string "ghostel" (string))
+(declare-function ghostel-send-key "ghostel" (key-name &optional mods))
+(declare-function ghostel-alt-screen-p "ghostel" ())
+(declare-function ghostel-command-running-p "ghostel" ())
 
 (defun devops--ghostel-buffer-name (dir)
   "Return the name of the ghostel terminal for DIR, one per target."
@@ -905,25 +910,50 @@ BODY, which may be nil."
                        (and body (list body)))))
     (and lines (string-join lines "\n"))))
 
+(defun devops--ghostel-terminal (dir env-vars)
+  "Pop to the ghostel terminal for DIR, starting it when needed.
+Return (BUFFER . OPEN), OPEN non-nil when the terminal was already
+open.  A new terminal starts with ENV-VARS, an alist of (NAME . VALUE),
+in its environment; one already open is left as it is."
+  (unless (require 'ghostel nil t)
+    (user-error "Package ghostel is not installed"))
+  (let* ((default-directory (file-name-as-directory (expand-file-name dir)))
+         (ghostel-buffer-name (devops--ghostel-buffer-name default-directory))
+         (open (and (get-buffer ghostel-buffer-name) t))
+         (ghostel-environment (append (unless open
+                                        (devops--ghostel-environment env-vars))
+                                      ghostel-environment)))
+    (cons (ghostel) open)))
+
 (defun devops--open-ghostel (dir env-vars body)
   "Pop to the ghostel terminal for DIR, with ENV-VARS exported.
 A new terminal starts with ENV-VARS in its environment.  A terminal
 already open gets ENV-VARS and BODY pasted at its prompt, not run.
 A new one does not, since its shell would run each pasted line as it
 started; BODY is in the kill ring for it."
-  (unless (require 'ghostel nil t)
-    (user-error "Package ghostel is not installed"))
-  (let* ((default-directory (file-name-as-directory (expand-file-name dir)))
-         (ghostel-buffer-name (devops--ghostel-buffer-name default-directory))
-         (open (get-buffer ghostel-buffer-name))
-         (ghostel-environment (append (unless open
-                                        (devops--ghostel-environment env-vars))
-                                      ghostel-environment))
-         (buf (ghostel)))
+  (pcase-let ((`(,buf . ,open) (devops--ghostel-terminal dir env-vars)))
     (when-let* ((open)
                 (text (devops--terminal-input env-vars body)))
       (with-current-buffer buf
         (ghostel-paste-string text)))))
+
+(defun devops--ghostel-busy-p ()
+  "Non-nil when the current ghostel terminal is not at a shell prompt."
+  (or (ghostel-alt-screen-p)
+      (ghostel-command-running-p)))
+
+(defun devops--run-in-ghostel (dir env-vars body)
+  "Run BODY in the ghostel terminal for DIR, with ENV-VARS exported.
+A terminal already open gets ENV-VARS as `export' lines, and is refused
+while a command runs in it.  A new one gets them in its environment,
+and BODY as typeahead its shell reads once it starts."
+  (pcase-let ((`(,buf . ,open) (devops--ghostel-terminal dir env-vars)))
+    (with-current-buffer buf
+      (when (and open (devops--ghostel-busy-p))
+        (user-error "Terminal %s is busy" (buffer-name)))
+      (ghostel-paste-string
+       (devops--terminal-input (and open env-vars) body))
+      (ghostel-send-key "return"))))
 
 (defun devops--open-terminal-at-dir (dir &optional env-vars body)
   "Open `devops-terminal-program' in DIR with ENV-VARS exported.
@@ -978,6 +1008,32 @@ terminal already open at the target."
       (kill-new body)
       (message "Source block copied to kill ring."))
     (devops--open-terminal-at-dir dir env-vars body)))
+
+(defun devops--block-terminal-dir (params)
+  "Return the directory a src block with PARAMS runs in from a terminal.
+Its own `:dir', else the heading's target unless the block opted out
+with `:target nil', else `default-directory'."
+  (or (cdr (assq :dir params))
+      (unless (devops--target-opted-out-p nil params)
+        (devops--heading-target-dir))
+      default-directory))
+
+;;;###autoload
+(defun devops-run-in-terminal ()
+  "Run the shell src block at point in a ghostel terminal at its target.
+The terminal is the one `devops-open-terminal-dwim' opens there, so
+the block runs where you can watch it and answer its prompts.  The
+block's :var arguments are exported first."
+  (interactive)
+  (let* ((info (and (derived-mode-p 'org-mode)
+                    (org-babel-get-src-block-info 'no-eval)))
+         (body (and (member (nth 0 info) '("sh" "bash" "shell"))
+                    (devops--src-block-body))))
+    (unless body
+      (user-error "Not in a shell src block with a body"))
+    (devops--run-in-ghostel (devops--block-terminal-dir (nth 2 info))
+                            (devops-src-block-env-vars)
+                            body)))
 
 (defun devops-unload-function ()
   "Turn `devops-mode' off, removing its advice before unloading.
