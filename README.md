@@ -352,11 +352,20 @@ Caveats:
 ## Terminal DWIM command
 
 I often like using a separate terminal to run most commands, instead of emacs.
-This package provides a `devops-open-terminal-dwim` command, which opens the current source block in a terminal. (Only `ghostty` supported at the moment, but more terminals planned.)
+This package provides a `devops-open-terminal-dwim` command, which opens a terminal at the heading's target (or at `default-directory` when the heading has none).
 
 Any `var` references become environment variables loaded into the (usually remote) 
 shell. The source block content is copied to the clipboard, so you can do 
 `devops-open-terminal-dwim`, then paste, and you will be running the command at the correct location.
+
+`devops-terminal-program` picks the terminal:
+
+- `ghostty` (default): opens an external [Ghostty](https://ghostty.org) window, running `ssh` for a remote target.
+- `ghostel`: opens a [ghostel](https://github.com/dakra/ghostel) terminal inside Emacs, reaching a remote target through TRAMP. Each target gets its own buffer (`*ghostel /ssh:web1:/srv/app/*`), reused on the next call. When that terminal is already open, the `export` lines and the block body are pasted at its prompt, so you only press `RET`. A new terminal gets the variables in its environment, and you yank the body yourself (`C-y`): its shell isn't at a prompt yet, and a paste would run line by line.
+
+```elisp
+(setq devops-terminal-program 'ghostel)
+```
 
 ## devops-lob
 

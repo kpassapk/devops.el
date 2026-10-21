@@ -91,8 +91,12 @@
   :prefix "devops-")
 
 (defcustom devops-terminal-program 'ghostty
-  "Terminal program to use for externally opening target locations."
-  :type '(choice (const ghostty))
+  "Terminal program `devops-open-terminal-dwim' opens target locations in.
+`ghostty' is an external terminal, which reaches a remote target by
+running ssh.  `ghostel' is a terminal inside Emacs, from the ghostel
+package, which reaches it through TRAMP."
+  :type '(choice (const :tag "Ghostty (external)" ghostty)
+                 (const :tag "Ghostel (inside Emacs)" ghostel))
   :group 'devops)
 
 (defcustom devops-enable-session-async nil
@@ -875,13 +879,63 @@ is an alist of (NAME . VALUE) exported in that shell."
           `("ghostty" ,(concat "--working-directory=" dir) "-e" "bash" "-c" ,(concat env-exports " && exec $SHELL"))
         `("ghostty" ,(concat "--working-directory=" dir))))))
 
-(defun devops--open-terminal-at-dir (dir &optional env-vars)
-  "Open `devops-terminal-program' in DIR with ENV-VARS exported."
+(defvar ghostel-buffer-name)
+(defvar ghostel-environment)
+(declare-function ghostel "ghostel" (&optional arg))
+(declare-function ghostel-paste-string "ghostel" (string))
+
+(defun devops--ghostel-buffer-name (dir)
+  "Return the name of the ghostel terminal for DIR, one per target."
+  (format "*ghostel %s*" (abbreviate-file-name dir)))
+
+(defun devops--ghostel-environment (env-vars)
+  "Return ENV-VARS, an alist of (NAME . VALUE), as `ghostel-environment'."
+  (mapcar (lambda (pair) (format "%s=%s" (car pair) (cdr pair)))
+          env-vars))
+
+(defun devops--terminal-input (env-vars body)
+  "Return the text to paste at a shell prompt, or nil.
+ENV-VARS, an alist of (NAME . VALUE), become `export' lines ahead of
+BODY, which may be nil."
+  (let ((lines (append (mapcar (lambda (pair)
+                                 (format "export %s=%s" (car pair)
+                                         (shell-quote-argument
+                                          (format "%s" (cdr pair)))))
+                               env-vars)
+                       (and body (list body)))))
+    (and lines (string-join lines "\n"))))
+
+(defun devops--open-ghostel (dir env-vars body)
+  "Pop to the ghostel terminal for DIR, with ENV-VARS exported.
+A new terminal starts with ENV-VARS in its environment.  A terminal
+already open gets ENV-VARS and BODY pasted at its prompt, not run.
+A new one does not, since its shell would run each pasted line as it
+started; BODY is in the kill ring for it."
+  (unless (require 'ghostel nil t)
+    (user-error "Package ghostel is not installed"))
+  (let* ((default-directory (file-name-as-directory (expand-file-name dir)))
+         (ghostel-buffer-name (devops--ghostel-buffer-name default-directory))
+         (open (get-buffer ghostel-buffer-name))
+         (ghostel-environment (append (unless open
+                                        (devops--ghostel-environment env-vars))
+                                      ghostel-environment))
+         (buf (ghostel)))
+    (when-let* ((open)
+                (text (devops--terminal-input env-vars body)))
+      (with-current-buffer buf
+        (ghostel-paste-string text)))))
+
+(defun devops--open-terminal-at-dir (dir &optional env-vars body)
+  "Open `devops-terminal-program' in DIR with ENV-VARS exported.
+BODY, a src block's body or nil, is for the program to offer at the
+prompt."
   (pcase devops-terminal-program
     ('ghostty
      (let ((ghostty (devops--ghostty-command dir env-vars)))
        (message "Calling process:\n%s" (string-join ghostty " "))
-       (apply #'start-process "devops-terminal" nil ghostty)))))
+       (apply #'start-process "devops-terminal" nil ghostty)))
+    ('ghostel
+     (devops--open-ghostel dir env-vars body))))
 
 (defun devops-src-block-env-vars ()
   "Return alist of evaluated :var params from current src block."
@@ -909,16 +963,21 @@ is an alist of (NAME . VALUE) exported in that shell."
 
 ;;;###autoload
 (defun devops-open-terminal-dwim ()
-  "Open terminal at contextual directory.
-In a src block, if the : copies body to clipboard and exports :var env vars."
+  "Open `devops-terminal-program' at the heading's target.
+With no target, open it in `default-directory'.  In a shell src block,
+export the block's :var arguments as environment variables and copy its
+body to the kill ring.  Ghostel also pastes them at the prompt of a
+terminal already open at the target."
   (interactive)
-  (let* ((dir (devops--heading-target-dir))
+  (let* ((dir (or (devops--heading-target-dir) default-directory))
          (env-vars (devops-src-block-env-vars))
-         (lang (org-element-property :language (org-element-at-point))))
-    (when (or (string= lang "shell") (string= lang "sh"))
-      (kill-new (devops--src-block-body))
+         (lang (org-element-property :language (org-element-at-point)))
+         (body (and (member lang '("shell" "sh"))
+                    (devops--src-block-body))))
+    (when body
+      (kill-new body)
       (message "Source block copied to kill ring."))
-    (devops--open-terminal-at-dir dir env-vars)))
+    (devops--open-terminal-at-dir dir env-vars body)))
 
 (defun devops-unload-function ()
   "Turn `devops-mode' off, removing its advice before unloading.

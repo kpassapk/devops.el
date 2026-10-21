@@ -1706,6 +1706,78 @@ override (issue #14)."
                  '("ghostty" "-e" "ssh" "-t" "example.com"
                    "cd /srv/app && $SHELL"))))
 
+(ert-deftest devops--ghostel-buffer-name-test ()
+  "Each target gets its own ghostel terminal, local or remote."
+  (should (equal (devops--ghostel-buffer-name "/ssh:deploy@example.com:/srv/app/")
+                 "*ghostel /ssh:deploy@example.com:/srv/app/*"))
+  (should-not (equal (devops--ghostel-buffer-name "/ssh:web1:/srv/")
+                     (devops--ghostel-buffer-name "/ssh:web2:/srv/"))))
+
+(ert-deftest devops--ghostel-environment-test ()
+  "Env vars become KEY=VALUE entries, any value printed as text."
+  (should (equal (devops--ghostel-environment '(("FOO" . "a b") ("N" . 3)))
+                 '("FOO=a b" "N=3")))
+  (should-not (devops--ghostel-environment nil)))
+
+(ert-deftest devops--terminal-input-test ()
+  "Exports, shell-quoted, come before the body; nothing to paste is nil."
+  (should (equal (devops--terminal-input '(("FOO" . "a b")) "echo $FOO")
+                 "export FOO=a\\ b\necho $FOO"))
+  (should (equal (devops--terminal-input nil "ls") "ls"))
+  (should (equal (devops--terminal-input '(("N" . 3)) nil) "export N=3"))
+  (should-not (devops--terminal-input nil nil)))
+
+(defvar ghostel-buffer-name)
+(defvar ghostel-environment)
+
+(defmacro devops-test--with-fake-ghostel (&rest body)
+  "Run BODY with a stand-in for the ghostel package.
+`ghostel' records the buffer name and environment it was called with in
+`started' and returns a buffer of that name; `ghostel-paste-string'
+records its text in `pasted'.  Buffers it made are killed afterwards."
+  (declare (indent 0) (debug t))
+  ;; `features' is not special, so it is set and restored, not let-bound.
+  `(let ((saved-features features)
+         (ghostel-buffer-name "*ghostel*")
+         (ghostel-environment '("KEEP=1"))
+         (started nil)
+         (pasted nil))
+     (cl-letf (((symbol-function 'ghostel)
+                (lambda (&optional _arg)
+                  (push (list ghostel-buffer-name ghostel-environment) started)
+                  (get-buffer-create ghostel-buffer-name)))
+               ((symbol-function 'ghostel-paste-string)
+                (lambda (text) (push (list (buffer-name) text) pasted))))
+       (unwind-protect
+           (progn
+             (push 'ghostel features)
+             ,@body)
+         (setq features saved-features)
+         (dolist (s started)
+           (when-let* ((buf (get-buffer (car s))))
+             (kill-buffer buf)))))))
+
+(ert-deftest devops--open-ghostel-new-terminal-test ()
+  "A new terminal gets the env vars in its environment; nothing is pasted."
+  (devops-test--with-local-target dir
+    (devops-test--with-fake-ghostel
+      (devops--open-ghostel dir '(("FOO" . "bar")) "echo $FOO")
+      (should (equal started
+                     `((,(devops--ghostel-buffer-name (file-name-as-directory dir))
+                        ("FOO=bar" "KEEP=1")))))
+      (should-not pasted))))
+
+(ert-deftest devops--open-ghostel-open-terminal-test ()
+  "A terminal already open gets exports and body pasted, not its environment."
+  (devops-test--with-local-target dir
+    (devops-test--with-fake-ghostel
+      (let ((name (devops--ghostel-buffer-name (file-name-as-directory dir))))
+        (get-buffer-create name)
+        (push (list name nil) started)  ; so the macro kills it
+        (devops--open-ghostel dir '(("FOO" . "bar")) "echo $FOO")
+        (should (equal (car started) `(,name ("KEEP=1"))))
+        (should (equal pasted `((,name "export FOO=bar\necho $FOO"))))))))
+
 ;;; Drift detection (devops-drift.el)
 
 (defmacro devops-test--with-drift-check (target org-fmt &rest body)
