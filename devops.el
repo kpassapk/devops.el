@@ -1010,7 +1010,7 @@ terminal already open at the target."
     (devops--open-terminal-at-dir dir env-vars body)))
 
 (defun devops--block-terminal-dir (params)
-  "Return the directory a src block with PARAMS runs in from a terminal.
+  "Return the terminal directory for a src block with PARAMS.
 Its own `:dir', else the heading's target unless the block opted out
 with `:target nil', else `default-directory'."
   (or (cdr (assq :dir params))
