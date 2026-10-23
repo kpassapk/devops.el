@@ -62,6 +62,11 @@
 ;; - `devops-drift'              (if loaded) report diff between blocks
 ;;                               and tangled files
 ;;
+;; Links:
+;;
+;; - [[target:TAG:PATH]]         PATH under TAG's target: a file, or a
+;;                               page when the target is a URL
+;;
 ;; If async is enabled (recommended)
 ;; - `devops-goto-session'       show the target's shell session
 ;; - `devops-restart-session'    kill the target's sessions
@@ -849,6 +854,47 @@ ARG, visit it in another window."
      (t
       (message "No tangle paths found.")))))
 
+(defun devops--url-p (target)
+  "Non-nil if TARGET is a URL such as https://host/ rather than a file."
+  (string-match-p "\\`[[:alpha:]][[:alnum:]+.-]*://" target))
+
+(defun devops--target-link-destination (target path)
+  "Return where a target: link to PATH under TARGET points.
+TARGET is a resolved #+TARGET value.  A URL gets PATH appended after a
+single slash; anything else is joined as `:tangle' paths are."
+  (cond
+   ((string-empty-p path) target)
+   ((devops--url-p target)
+    (concat (string-trim-right target "/") "/" (string-trim-left path "/")))
+   (t (devops--join-target target path))))
+
+(defun devops--target-link-resolve (link)
+  "Resolve LINK, the part of a target: link after the colon.
+LINK is TAG or TAG:PATH, TAG being a tag in a #+TARGET keyword of the
+current buffer."
+  (let* ((sep (string-search ":" link))
+         (tag (substring link 0 sep))
+         (path (if sep (substring link (1+ sep)) ""))
+         (target (or (devops-with-sync (devops--resolve-target-for-tag tag))
+                     (user-error "No #+TARGET for tag %s" tag))))
+    (devops--target-link-destination target path)))
+
+(defun devops--target-link-follow (link _arg)
+  "Open LINK, a target: link, in a browser if a URL or else as a file."
+  (let ((dest (devops--target-link-resolve link)))
+    (if (devops--url-p dest)
+        (browse-url dest)
+      (find-file dest))))
+
+(defun devops--target-link-complete ()
+  "Read a target: link, a #+TARGET tag then a path under it."
+  (let ((tag (completing-read "Target: " (devops-target-tag-alist) nil t)))
+    (concat "target:" tag ":" (read-string (format "Path under %s: " tag)))))
+
+(org-link-set-parameters "target"
+                         :follow #'devops--target-link-follow
+                         :complete #'devops--target-link-complete)
+
 (defun devops--ghostty-command (dir &optional env-vars)
   "Return a ghostty command line opening a shell in DIR.
 DIR may be remote, in which case ghostty runs ssh to its host.  ENV-VARS
@@ -1039,6 +1085,8 @@ block's :var arguments are exported first."
   "Turn `devops-mode' off, removing its advice before unloading.
 Return nil, so the rest of the unloading proceeds as usual."
   (devops-mode -1)
+  (setq org-link-parameters (assoc-delete-all "target" org-link-parameters))
+  (org-link-make-regexps)
   nil)
 
 (provide 'devops)

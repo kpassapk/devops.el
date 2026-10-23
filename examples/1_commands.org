@@ -57,3 +57,21 @@ When you execute this, you will get a prompt to choose which server
 #+begin_src sh :results output
 ls
 #+end_src
+
+* Linking to a target
+
+A =target:= link points at a path under a target, so a link survives the
+target moving to a new host.  =C-c C-o= opens it: a file through TRAMP,
+or a browser page when the target is a URL.
+
+#+begin_example
+#+TARGET: grafana https://grafana.example.com
+
+[[target:server1:/etc/nginx/nginx.conf][nginx config on server1]]
+[[target:grafana:d/node-exporter][node dashboard]]
+#+end_example
+
+[[target:server1:/etc/nginx/nginx.conf][nginx config on server1]]
+
+=C-c C-l target: RET= picks a tag and asks for the path.
+

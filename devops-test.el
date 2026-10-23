@@ -93,8 +93,12 @@ The directory is removed afterwards."
         (should-not (devops-unload-function))
         (should-not devops-mode)
         (should-not (advice-member-p #'devops--execute-on-target
-                                     'org-babel-execute-src-block)))
-    (devops-mode 1)))
+                                     'org-babel-execute-src-block))
+        (should-not (assoc "target" org-link-parameters)))
+    (devops-mode 1)
+    (org-link-set-parameters "target"
+                             :follow #'devops--target-link-follow
+                             :complete #'devops--target-link-complete)))
 
 ;;; Keyword parsing
 
@@ -320,6 +324,54 @@ The directory is removed afterwards."
     (org-back-to-heading)
     (devops-set-header-args-from-tags)
     (should (equal (org-entry-get nil "header-args") ":dir /srv/one/"))))
+
+;;; target: links
+
+(ert-deftest devops--target-link-destination-test ()
+  "A link joins files as tangling does, and URLs with one slash."
+  (should (equal (devops--target-link-destination "/ssh:host:" "etc/x.conf")
+                 "/ssh:host:etc/x.conf"))
+  (should (equal (devops--target-link-destination "/ssh:host:/srv" "/etc/x")
+                 "/ssh:host:/etc/x"))
+  (should (equal (devops--target-link-destination "/ssh:host:/srv" "")
+                 "/ssh:host:/srv"))
+  (should (equal (devops--target-link-destination "https://grafana.example.com/"
+                                                  "/d/abc")
+                 "https://grafana.example.com/d/abc"))
+  (should (equal (devops--target-link-destination "https://example.com" "a/b")
+                 "https://example.com/a/b")))
+
+(ert-deftest devops--target-link-resolve-test ()
+  "A link resolves its tag through the buffer's #+TARGET keywords."
+  (devops-test--with-org
+      (concat "#+TARGET: web /ssh:web1:/srv/\n"
+              "#+TARGET: dash https://dash.example.com\n")
+    (should (equal (devops--target-link-resolve "web:app/x.conf")
+                   "/ssh:web1:/srv/app/x.conf"))
+    (should (equal (devops--target-link-resolve "web") "/ssh:web1:/srv/"))
+    (should (equal (devops--target-link-resolve "dash:status")
+                   "https://dash.example.com/status"))
+    (should-error (devops--target-link-resolve "nope:x") :type 'user-error)))
+
+(ert-deftest devops-target-link-follow-test ()
+  "Following a link visits the file, or browses a URL."
+  (devops-test--with-local-target target
+    (with-temp-file (expand-file-name "x.txt" target) (insert "hi\n"))
+    (devops-test--with-org
+        (format "#+TARGET: local %s\n#+TARGET: dash https://d.example\n"
+                target)
+      (let ((org-buf (current-buffer))
+            browsed)
+        (devops--target-link-follow "local:x.txt" nil)
+        (unwind-protect
+            (should (equal buffer-file-name
+                           (expand-file-name "x.txt" target)))
+          (kill-buffer))
+        (with-current-buffer org-buf
+          (cl-letf (((symbol-function 'browse-url)
+                     (lambda (url &rest _) (setq browsed url))))
+            (devops--target-link-follow "dash:a" nil)))
+        (should (equal browsed "https://d.example/a"))))))
 
 ;;; Target/path joining
 
